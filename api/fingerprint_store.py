@@ -101,6 +101,7 @@ def contribute(
                     source_url, added_at_ms, updated_at_ms, auto_added, provenance
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (phash_hex, consumer_id) DO NOTHING
                 RETURNING *
                 """,
                 (
@@ -109,6 +110,17 @@ def contribute(
                     enc_source_url, now_ms, now_ms, auto_added, provenance,
                 ),
             ).fetchone()
+            if row is None:
+                # A concurrent contribute for the same (phash_hex, consumer)
+                # won the race between our SELECT above and this INSERT. Let the
+                # unique constraint arbitrate and surface it as a duplicate
+                # (caller returns 409) rather than a 500 on IntegrityError.
+                existing = conn.execute(
+                    "SELECT id, status FROM fingerprints "
+                    "WHERE phash_hex = %s AND consumer_id = %s",
+                    (phash_hex, consumer_id),
+                ).fetchone()
+                return existing, False
             return row, True
 
 
