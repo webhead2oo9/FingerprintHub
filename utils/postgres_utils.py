@@ -141,7 +141,7 @@ def validate_postgres_runtime(
         exists_row = conn.execute("SELECT to_regclass('public.alembic_version') AS table_name").fetchone()
         if not exists_row or not exists_row["table_name"]:
             raise RuntimeError(
-                "Postgres schema is not initialized; run Alembic upgrade head before starting the bot"
+                "Postgres schema is not initialized; run Alembic upgrade head before starting FingerprintHub"
             )
         revision_rows = conn.execute("SELECT version_num FROM alembic_version").fetchall()
 
@@ -150,7 +150,7 @@ def validate_postgres_runtime(
         raise RuntimeError(
             "Postgres schema revision mismatch; "
             f"database={sorted(current_heads)} expected={sorted(expected_heads)}. "
-            "Run Alembic upgrade head out of band before starting the bot."
+            "Run Alembic upgrade head out of band before starting FingerprintHub."
         )
 
     return {

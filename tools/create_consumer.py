@@ -13,6 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 
+import psycopg
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +45,9 @@ def main() -> int:
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except psycopg.errors.UniqueViolation:
+        print(f"error: a consumer named {args.name!r} already exists", file=sys.stderr)
         return 2
 
     print(f"Created consumer id={consumer_id} name={args.name!r} scopes={scopes}")

@@ -67,4 +67,6 @@ def load_config_from_env() -> ServiceConfig:
             ),
         ),
         max_sync_limit=_int_env("FINGERPRINTHUB_MAX_SYNC_LIMIT", DEFAULT_MAX_SYNC_LIMIT),
+        default_sync_limit=_int_env("FINGERPRINTHUB_DEFAULT_SYNC_LIMIT", DEFAULT_SYNC_LIMIT),
+        max_list_limit=_int_env("FINGERPRINTHUB_MAX_LIST_LIMIT", DEFAULT_MAX_LIST_LIMIT),
     )
