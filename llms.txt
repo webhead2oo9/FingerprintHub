@@ -36,15 +36,19 @@ backplane**, not a lookup service you call per-message.
 
 ## How to talk to it
 
-- Base URL (prod): `http://127.0.0.1:58751`. It binds localhost only — no public
-  network exposure. A client runs on the same host (or tunnels in).
+- Base URL: wherever the hub is deployed; default bind is `127.0.0.1:58751`
+  (`FINGERPRINTHUB_HOST`/`_PORT`). Localhost-only by default — no public network
+  exposure. A client runs on the same host (or tunnels in).
 - Every endpoint except `GET /v1/health` requires `X-API-Key: fph_…`. The raw
   key is never stored; only its sha256 hash is. Get a key from an operator
   (`tools/create_consumer.py`).
 - Scopes are independent flags (NOT hierarchical): `read`, `write`, `admin`.
   Most integrations get `read,write`. `admin` is held in reserve, not issued.
 - Error bodies are JSON `{"error": "..."}`; `409` also includes `existing_id`.
-- Rate-limited per consumer (default 300 req/min → `429`).
+- DB outage → `503 {"error": "database temporarily unavailable"}` on any
+  endpoint; `/v1/health` then returns `503 {"status": "degraded", "db": false}`.
+- Rate-limited per consumer (default 300 req/min → `429`; in-memory sliding
+  window, resets on hub restart).
 
 ## API reference (all paths under `/v1`)
 
@@ -104,9 +108,9 @@ not before, durably persisting). If `has_more`, immediately request again with
 - `action`: required, one of `kick|timeout` (a softban-intent hint; clients may
   honor or override locally).
 - The compatibility triple `algorithm/algorithm_version/normalization_version`
-  defaults to `phash` / `imagehash.phash` / `alpha_white_v1` (the reference
-  triple: `imagehash.phash` over the image flattened onto a white background).
-  Use YOUR triple if your preprocessing differs, and filter sync on it.
+  defaults to `phash` / `imagehash.phash` / `alpha_white_v1` — the reference
+  recipe under "Computing a compatible pHash" below. Use YOUR triple if your
+  preprocessing differs, and filter sync on it.
 - `reason`/`source_url` are encrypted at rest and redacted from non-owners.
 - `201` → created row (owner sees secrets). `409 {"error":"duplicate…",
   "existing_id":N}` → a live row already exists for this `(phash_hex, consumer)`.
@@ -116,7 +120,7 @@ not before, durably persisting). If `has_more`, immediately request again with
 
 - `POST /v1/fingerprints/{id}/hit` — body `{"guild_id":"…","distance":2}` (all
   optional). Bumps `hit_count`/`last_hit_at_ms`; does NOT advance `sync_seq`.
-  `404` if missing/deleted.
+  Returns `{"id":N,"hit_count":M}`; `404` if missing/deleted.
 - `POST /v1/fingerprints/{id}/flag` — body `{"reason":"…"}` (optional).
   Idempotent per consumer. Auto-hides the row once
   `FINGERPRINTHUB_AUTO_HIDE_FLAG_THRESHOLD` (default 2) DISTINCT consumers flag
@@ -126,7 +130,8 @@ not before, durably persisting). If `has_more`, immediately request again with
   already gone.
 - `GET /v1/fingerprints/{id}` — full record; `reason`/`source_url` are `null`
   unless you own the row or hold `admin`; a `hidden` row → `404` for non-owners.
-- `GET /v1/fingerprints` — browse; `include_hidden` honored only with `admin`.
+- `GET /v1/fingerprints` — browse; default `limit=50` (max 200);
+  `include_hidden` honored only with `admin`.
 - `GET /v1/fingerprints/stats` — `total_active/hidden/deleted`, `total_hits`,
   `by_category`, `by_provenance`, `active_consumers`.
 
@@ -158,6 +163,49 @@ not before, durably persisting). If `has_more`, immediately request again with
 - This means one server's mistake or bad actor can't silently delete protection
   for everyone.
 
+## Computing a compatible pHash (the reference triple, exactly)
+
+The hub never validates hashes — compatibility is a client-side contract, and
+an almost-right implementation produces hashes that silently never match
+anyone's. Three production consumers (Nexarion, VRDHelper, EmuVR Invites)
+interoperate with EXACTLY this recipe (from Nexarion's
+`helpers/scam_detection/fingerprint_hash.py`); copy it, don't approximate it:
+
+```python
+import io
+import imagehash
+from PIL import Image
+
+def compute_phash_hex(image_bytes: bytes) -> str:
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        image.load()                    # animated images: frame 0 only (no seek)
+        # alpha_white_v1: flatten transparency onto opaque WHITE.
+        # Non-transparent modes pass through UNCHANGED (no forced RGB convert —
+        # imagehash grayscales internally).
+        if image.mode in ("RGBA", "LA") or (
+            image.mode == "P" and "transparency" in image.info
+        ):
+            rgba = image.convert("RGBA")
+            background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+            image = Image.alpha_composite(background, rgba).convert("RGB")
+        phash = int(str(imagehash.phash(image)), 16)  # defaults: hash_size=8 → 64-bit
+    return format(phash & ((1 << 64) - 1), "016x")    # 16 lowercase hex, zero-padded
+```
+
+- `imagehash.phash` is called with DEFAULT args (`hash_size=8`,
+  `highfreq_factor=4`): grayscale → 32×32 → DCT → top-left 8×8 vs median →
+  64-bit hash → `"016x"` gives the wire format.
+- **Matching is client-side Hamming** (XOR + popcount) over your local index —
+  the hub does none. Production tolerance is 5–6 bits; Nexarion clamps to 0–16
+  (beyond ~16 bits on 64 you get chance collisions).
+- **Pin your imaging libs** (consumers pin `Pillow==12.2.0`,
+  `ImageHash==4.3.2`) and verify hash parity against a known image before
+  trusting your integration — library-version drift breaks cross-consumer
+  matching silently.
+- Client-side input hygiene is YOUR job: consumers cap downloads at 8 MiB,
+  guard decompression bombs (50M-pixel cap), and only process
+  `png/jpeg/webp/gif`.
+
 ## The integration pattern (implement this, don't be naive)
 
 **Do NOT call the hub on your moderation hot path.** Keep your existing local
@@ -165,6 +213,12 @@ store + in-memory index and treat the hub as a sync source + contribution
 target. Matching stays exactly as fast as a local-only implementation and has
 no hard dependency on the hub being reachable at startup (load from local DB at
 boot).
+
+The minimal viable client is just **sync + contribute + hit** (VRDHelper ships
+exactly this; removals reach it via sync tombstones). `/flag` and `DELETE` are
+for moderation flows — add them when staff can remove fingerprints locally.
+`action` is advisory: existing consumers override it with their own configured
+enforcement rather than honoring the contributor's choice.
 
 ### Local schema additions on YOUR side
 
@@ -236,8 +290,9 @@ these `image_fingerprint_hub_*` and ALSO requires allowlisting them in
 Seed the hub with your existing catalog: read local rows with
 `hub_fingerprint_id IS NULL`, `POST` each, stamp the returned id back locally.
 Make it idempotent (skip already-linked rows; treat `409` as success via
-`existing_id`) so it's safely resumable. Reference: Nexarion's
-`dev-scripts/backfill_fingerprint_hub.py`.
+`existing_id`) so it's safely resumable. No reference script exists yet —
+existing consumers only contribute on new adds, so pre-integration rows stay
+unlinked until you write this.
 
 ### Gotchas (the ones that bite)
 
@@ -249,6 +304,9 @@ Make it idempotent (skip already-linked rows; treat `409` as success via
 - Your pHash preprocessing MUST match the triple you claim, or your hashes
   aren't Hamming-comparable to peers and the whole thing is useless. The
   reference triple is `phash` / `imagehash.phash` / `alpha_white_v1`.
+- Re-contributing a `(phash_hex, consumer)` pair resurrects only DELETED rows.
+  If YOUR row was auto-HIDDEN by peer flags, contribute returns `409` with its
+  id and the row stays hidden — dispute it with an operator, don't retry.
 
 ## Data model (for context; you don't write to it directly)
 
@@ -302,13 +360,26 @@ tests/                       Postgres-backed, DESTRUCTIVE (TRUNCATE); skipped un
 - Optional knobs (defaults shown): `FINGERPRINTHUB_RATE_LIMIT=300`,
   `FINGERPRINTHUB_AUTO_HIDE_FLAG_THRESHOLD=2`, `FINGERPRINTHUB_MAX_SYNC_LIMIT=500`,
   `FINGERPRINTHUB_DEFAULT_SYNC_LIMIT=200`, `FINGERPRINTHUB_MAX_LIST_LIMIT=200`,
-  `FINGERPRINTHUB_LOG_LEVEL=INFO`.
+  `FINGERPRINTHUB_BLOCKING_IO_MAX_WORKERS=16`, `FINGERPRINTHUB_LOG_LEVEL=INFO`.
 
-Secrets live ONLY in `.env` (chmod 600, gitignored). Never committed.
+`.env.example` is a fill-in-the-blanks template. Secrets live ONLY in `.env`
+(chmod 600, gitignored). Never committed.
 
 ## Commands
 
 ```bash
+# ---- bootstrap on a fresh machine (ordered) ----
+python3.13 -m venv venv && venv/bin/pip install -r requirements.txt
+cp .env.example .env                        # then fill in the values below
+docker compose up -d                        # dev-only Postgres on :54330
+                                            # (prod: native Postgres, own role+db)
+venv/bin/python tools/generate_field_key.py --key-id v1   # paste output into .env
+venv/bin/alembic upgrade head               # required BEFORE first start
+venv/bin/python tools/create_consumer.py --name mybot --scopes read,write
+venv/bin/python main.py                     # serve
+curl -s http://127.0.0.1:58751/v1/health    # → {"status":"ok","db":true}
+
+# ---- day-to-day ----
 # serve (prod: systemd unit FingerprintHub.service on 127.0.0.1:58751)
 venv/bin/python main.py
 

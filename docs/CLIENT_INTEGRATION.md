@@ -104,8 +104,9 @@ then flip it on as a separate step. Recommended: `hub_enabled` (bool),
 To seed the hub with your existing catalog: read local rows that aren't linked
 (`hub_fingerprint_id IS NULL`), `POST` each, and stamp the returned id back
 locally. Make it idempotent (skip already-linked rows; treat `409` as success
-using `existing_id`) so it's safely resumable. See Nexarion's
-`dev-scripts/backfill_fingerprint_hub.py`.
+using `existing_id`) so it's safely resumable. No reference script exists yet —
+Nexarion only contributes on new adds, so rows created before its hub
+integration stay unlinked until backfilled.
 
 ## Gotchas
 
