@@ -16,7 +16,11 @@ from dotenv import load_dotenv
 
 from api.app import create_app
 from config import load_config_from_env
-from utils.postgres_utils import get_postgres_pool, validate_postgres_runtime
+from utils.postgres_utils import (
+    close_postgres_pool,
+    get_postgres_pool,
+    validate_postgres_runtime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +52,10 @@ def main() -> None:
     app = create_app_from_environment()
     config = app["config"]
     logger.info("Starting FingerprintHub on %s:%s", config.host, config.port)
-    web.run_app(app, host=config.host, port=config.port)
+    try:
+        web.run_app(app, host=config.host, port=config.port)
+    finally:
+        close_postgres_pool()
 
 
 if __name__ == "__main__":

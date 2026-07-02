@@ -253,8 +253,13 @@ def flag(
     active→hidden transition."""
     with pool.connection() as conn:
         with conn.transaction():
+            # FOR UPDATE serializes concurrent flaggers of the same fingerprint.
+            # Without it, two flags racing to the threshold can each COUNT before
+            # the other commits, both see a sub-threshold count, and neither
+            # hides — a miss that never self-heals once every consumer has flagged.
             fp = conn.execute(
-                "SELECT id, status FROM fingerprints WHERE id = %s", (fingerprint_id,)
+                "SELECT id, status FROM fingerprints WHERE id = %s FOR UPDATE",
+                (fingerprint_id,),
             ).fetchone()
             if fp is None or fp["status"] == "deleted":
                 return None

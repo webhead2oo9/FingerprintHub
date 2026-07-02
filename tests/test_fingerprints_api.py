@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+from api import fingerprint_store
 from tests.conftest import auth
+from utils.time_utils import utc_now_ms
 
 PHASH_A = "0123456789abcdef"
 PHASH_B = "fedcba9876543210"
@@ -131,6 +136,39 @@ async def test_redaction_for_non_owner(client, make_consumer):
     assert other_view.status == 200
     body = await other_view.json()
     assert body["reason"] is None and body["source_url"] is None
+
+
+async def test_concurrent_flags_serialize_to_hidden(client, pool, make_consumer):
+    # Two distinct flaggers hitting the threshold simultaneously must still
+    # auto-hide exactly once. The SELECT ... FOR UPDATE in flag() serializes
+    # them; without it, both could COUNT below threshold and neither would hide.
+    _owner, key_owner = make_consumer("owner", ["read", "write"])
+    f1_id, _k1 = make_consumer("flagger-1", ["read", "write"])
+    f2_id, _k2 = make_consumer("flagger-2", ["read", "write"])
+    row = await (await _contribute(client, key_owner, PHASH_A)).json()
+    fid = row["id"]
+
+    barrier = threading.Barrier(2)  # release both threads as close together as possible
+
+    def do_flag(consumer_id: int):
+        barrier.wait()
+        return fingerprint_store.flag(
+            pool,
+            fingerprint_id=fid,
+            consumer_id=consumer_id,
+            reason=None,
+            now_ms=utc_now_ms(),
+            auto_hide_threshold=2,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futures = [ex.submit(do_flag, f1_id), ex.submit(do_flag, f2_id)]
+        for future in futures:
+            future.result()  # re-raise any error from the worker threads
+
+    final = fingerprint_store.get(pool, fid)
+    assert final["status"] == "hidden"
+    assert int(final["flag_count"]) == 2
 
 
 async def test_resurrect_after_delete(client, make_consumer):

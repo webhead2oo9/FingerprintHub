@@ -13,7 +13,6 @@ from typing import Any, Dict, Optional, Tuple
 
 from aiohttp import web
 from aiohttp.client_exceptions import ContentTypeError
-import psycopg
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +33,6 @@ def handle_errors(func):
             raise
 
     return wrapper
-
-
-def db_error_response(error: Exception, operation: str = "database operation") -> web.Response:
-    """Return a standardized HTTP error response for database failures."""
-    if isinstance(error, psycopg.OperationalError):
-        logger.error("Database unavailable during %s: %s", operation, error)
-        return web.json_response({"error": "Database temporarily unavailable"}, status=503)
-    logger.error("Database error during %s: %s", operation, error)
-    return web.json_response({"error": f"Database error during {operation}"}, status=500)
 
 
 async def parse_json_body(

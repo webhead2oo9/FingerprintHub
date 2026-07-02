@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+import psycopg
 from aiohttp import web
 
 from api import fingerprints
@@ -19,6 +20,13 @@ async def error_middleware(request: web.Request, handler):
         return await handler(request)
     except web.HTTPException:
         raise
+    except psycopg.OperationalError:
+        # DB unavailable/connection lost (incl. psycopg_pool.PoolTimeout, a
+        # subclass) => 503, matching /v1/health's degraded signal, not a 500.
+        logger.exception("database unavailable handling %s %s", request.method, request.path)
+        return web.json_response(
+            {"error": "database temporarily unavailable"}, status=503
+        )
     except Exception:  # noqa: BLE001 - last-resort 500
         logger.exception("unhandled error handling %s %s", request.method, request.path)
         return web.json_response({"error": "internal server error"}, status=500)
