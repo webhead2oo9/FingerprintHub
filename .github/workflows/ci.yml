@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: fingerprinthub
+          POSTGRES_PASSWORD: fingerprinthub_test
+          POSTGRES_DB: fingerprinthub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fingerprinthub -d fingerprinthub_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FINGERPRINTHUB_DATABASE_URL: postgresql://fingerprinthub:fingerprinthub_test@127.0.0.1:5432/fingerprinthub_test
+      FINGERPRINTHUB_TEST_DATABASE_URL: postgresql://fingerprinthub:fingerprinthub_test@127.0.0.1:5432/fingerprinthub_test
+      FINGERPRINTHUB_FIELD_ENCRYPTION_KEYS: v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      FINGERPRINTHUB_FIELD_ENCRYPTION_ACTIVE_KEY_ID: v1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - run: python -m pip check
+      - run: python -m pip install --disable-pip-version-check pip-audit==2.10.1
+      - run: python -m pip_audit --progress-spinner off -r requirements.txt
+      - run: alembic upgrade head
+      - run: python tests/verify_privacy_migration.py
+      - run: >-
+          python -c "from api.keys import CONFIG_KEY;
+          from main import create_app_from_environment;
+          from utils.postgres_utils import close_postgres_pool;
+          app=create_app_from_environment(); assert app[CONFIG_KEY]; close_postgres_pool()"
+      - run: python -m pytest -q

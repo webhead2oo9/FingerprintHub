@@ -1,0 +1,22 @@
+# LOCAL DEVELOPMENT ONLY. This provides a disposable Postgres on a non-default
+# host port for local tests and validation. It is not a production template.
+services:
+  fingerprinthub-postgres:
+    image: postgres:18-alpine
+    container_name: fingerprinthub-postgres-dev
+    environment:
+      POSTGRES_USER: fingerprinthub
+      POSTGRES_PASSWORD: fingerprinthub_dev
+      POSTGRES_DB: fingerprinthub_dev
+    ports:
+      - "127.0.0.1:54330:5432"
+    volumes:
+      - fingerprinthub-postgres-dev-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fingerprinthub -d fingerprinthub_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  fingerprinthub-postgres-dev-data:
