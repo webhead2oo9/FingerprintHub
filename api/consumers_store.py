@@ -1,6 +1,6 @@
 """Consumer (API client) persistence and API-key primitives.
 
-A consumer is a bot/server that contributes and syncs fingerprints. Each holds
+A consumer is a client that contributes and syncs fingerprints. Each holds
 exactly one API key; only its SHA-256 hash is stored. Lookup is by exact hash
 match on a UNIQUE index (the hash itself is the lookup key — no per-request
 scan, so no constant-time-compare loop is needed; the stored value is a

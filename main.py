@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""FingerprintHub entrypoint: standalone shared scam-image fingerprint service.
+"""FingerprintHub entrypoint: standalone shared image-fingerprint service.
 
-Runs as its own process (modeled on Nexarion's api/deals_ingest_server.py),
-sharing the native Postgres instance via its own database. Requires the schema
-to already be at Alembic head (run ``alembic upgrade head`` out of band).
+Runs as its own process against a dedicated Postgres database. Requires the
+schema to already be at Alembic head (run ``alembic upgrade head`` out of band).
 """
 
 from __future__ import annotations

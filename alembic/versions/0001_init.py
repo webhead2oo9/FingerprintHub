@@ -4,8 +4,8 @@ Revision ID: 0001_init
 Revises:
 Create Date: 2026-06-30
 
-Schema for the shared scam-image fingerprint service. Consumers (bots/servers)
-authenticate with per-key hashes and contribute/sync perceptual-hash
+Schema for the shared image-fingerprint service. Consumers authenticate with
+per-key hashes and contribute/sync perceptual-hash
 fingerprints. A monotonic ``sync_seq`` (advanced on content changes, NOT on
 stats-only updates) drives incremental, tombstone-capable sync.
 """

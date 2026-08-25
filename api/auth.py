@@ -1,10 +1,10 @@
 """Per-consumer API-key authentication, scope checks, and rate limiting.
 
-Unlike Nexarion's single shared key, FingerprintHub is multi-tenant: each
-request carries a consumer's API key in ``X-API-Key``; we hash it and look the
-consumer up by exact hash match. The resolved consumer (id, name, scopes) is
-attached to ``request['consumer']`` for handlers; per-route scope enforcement
-is done in the handlers via :func:`require_scope`.
+FingerprintHub is multi-tenant: each request carries a consumer's API key in
+``X-API-Key``; we hash it and look the consumer up by exact hash match. The
+resolved consumer (id, name, scopes) is attached to ``request['consumer']`` for
+handlers; per-route scope enforcement is done in the handlers via
+:func:`require_scope`.
 """
 
 from __future__ import annotations

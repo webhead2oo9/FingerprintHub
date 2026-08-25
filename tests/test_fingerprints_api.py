@@ -27,7 +27,7 @@ async def _contribute(client, key, phash, **overrides):
 
 
 async def test_contribute_and_duplicate(client, make_consumer):
-    _cid, key = make_consumer("nexarion", ["read", "write"])
+    _cid, key = make_consumer("community-client", ["read", "write"])
     resp = await _contribute(client, key, PHASH_A)
     assert resp.status == 201
     row = await resp.json()
@@ -42,7 +42,7 @@ async def test_contribute_and_duplicate(client, make_consumer):
 
 
 async def test_validation_rejects_bad_input(client, make_consumer):
-    _cid, key = make_consumer("nexarion", ["read", "write"])
+    _cid, key = make_consumer("community-client", ["read", "write"])
     bad_hash = await _contribute(client, key, "NOTHEX")
     assert bad_hash.status == 400
     bad_action = await _contribute(client, key, PHASH_A, action="nuke")
@@ -52,12 +52,12 @@ async def test_validation_rejects_bad_input(client, make_consumer):
 
 
 async def test_sync_excludes_own_but_returns_peer(client, make_consumer):
-    _a, key_a = make_consumer("bot-a", ["read", "write"])
-    _b, key_b = make_consumer("bot-b", ["read", "write"])
+    _a, key_a = make_consumer("client-a", ["read", "write"])
+    _b, key_b = make_consumer("client-b", ["read", "write"])
     await _contribute(client, key_a, PHASH_A)
     await _contribute(client, key_b, PHASH_B)
 
-    # bot-a should NOT see its own contribution, but SHOULD see bot-b's.
+    # client-a should NOT see its own contribution, but SHOULD see client-b's.
     resp = await client.get("/v1/fingerprints/sync?since=0", headers=auth(key_a))
     assert resp.status == 200
     body = await resp.json()
@@ -69,7 +69,7 @@ async def test_sync_excludes_own_but_returns_peer(client, make_consumer):
 
 
 async def test_hit_increments_count(client, make_consumer):
-    _cid, key = make_consumer("nexarion", ["read", "write"])
+    _cid, key = make_consumer("community-client", ["read", "write"])
     row = await (await _contribute(client, key, PHASH_A)).json()
     r1 = await client.post(
         f"/v1/fingerprints/{row['id']}/hit", headers=auth(key), json={"distance": 2}
@@ -172,7 +172,7 @@ async def test_concurrent_flags_serialize_to_hidden(client, pool, make_consumer)
 
 
 async def test_resurrect_after_delete(client, make_consumer):
-    _cid, key = make_consumer("nexarion", ["read", "write"])
+    _cid, key = make_consumer("community-client", ["read", "write"])
     row = await (await _contribute(client, key, PHASH_A)).json()
     await client.delete(f"/v1/fingerprints/{row['id']}", headers=auth(key))
     # Re-contributing the same phash for the same consumer resurrects it.

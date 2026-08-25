@@ -13,7 +13,7 @@ services:
       POSTGRES_PASSWORD: fingerprinthub_dev
       POSTGRES_DB: fingerprinthub_dev
     ports:
-      - "54330:5432"
+      - "127.0.0.1:54330:5432"
     volumes:
       - fingerprinthub-postgres-dev-data:/var/lib/postgresql
     healthcheck:

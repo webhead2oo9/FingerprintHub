@@ -1,10 +1,8 @@
 # FingerprintHub requirements (Python 3.13+)
 #
-# Versions pinned to match Nexarion's requirements.txt so the shared-pattern
-# modules (utils/postgres_utils.py, utils/field_encryption.py, utils/async_utils.py)
-# run against identical library versions. Smaller footprint than Nexarion: no
-# discord.py / openai / Pillow / ImageHash — the hub never decodes images or
-# computes perceptual hashes (clients do that and send phash_hex text).
+# Runtime and test dependencies are fully pinned for reproducible installs.
+# The service never decodes images or computes perceptual hashes; clients do
+# that work and send ``phash_hex`` text.
 
 # Direct runtime dependencies
 aiohttp==3.14.0

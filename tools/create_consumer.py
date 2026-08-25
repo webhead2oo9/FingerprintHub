@@ -4,7 +4,7 @@
 The raw key is shown exactly once and never stored (only its SHA-256 hash is
 persisted). Run on the host with FINGERPRINTHUB_DATABASE_URL set, e.g.:
 
-    venv/bin/python tools/create_consumer.py --name nexarion --scopes read,write
+    venv/bin/python tools/create_consumer.py --name community-client --scopes read,write
 """
 
 from __future__ import annotations
@@ -27,7 +27,9 @@ from utils.time_utils import utc_now_ms  # noqa: E402
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create a FingerprintHub consumer.")
-    parser.add_argument("--name", required=True, help="Unique consumer name, e.g. 'nexarion'.")
+    parser.add_argument(
+        "--name", required=True, help="Unique consumer name, e.g. 'community-client'."
+    )
     parser.add_argument(
         "--scopes",
         default="read,write",

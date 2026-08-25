@@ -3,9 +3,9 @@
 ## Purpose
 
 FingerprintHub is a small multi-tenant service that shares perceptual-hash
-(pHash) fingerprints of known-bad scam images across multiple Discord bots.
-When one server fingerprints a scam image, every other participating server can
-recognize it too — without re-doing the manual review.
+(pHash) fingerprints of known-bad images across community-safety clients. When
+one client fingerprints an image, every other participating client can
+recognize it without repeating the manual review.
 
 The hub is deliberately dumb about images: it only stores and serves the
 `phash_hex` string. **Image decoding and pHash computation happen entirely in
@@ -24,8 +24,8 @@ api/
   fingerprint_store.py       DB CRUD; the sync_seq + tombstone invariants live here
   consumers_store.py         consumer rows + API-key primitives
   errors.py                  handle_errors decorator, parse_json_body
-utils/                       postgres_utils, field_encryption, async_utils, config_access,
-                             time_utils  (first four ported from Nexarion, re-prefixed)
+utils/                       postgres_utils, field_encryption, async_utils,
+                             config_access, time_utils
 alembic/                     schema history (0001_init)
 tools/
   create_consumer.py         operator CLI: mint a consumer + one-time API key
@@ -46,7 +46,7 @@ tools/
 
 See `alembic/versions/0001_init.py` for exact DDL.
 
-- **`consumers`** — one row per bot/server. `api_key_hash` = `sha256(raw_key)`
+- **`consumers`** — one row per client. `api_key_hash` = `sha256(raw_key)`
   (raw key never stored). `scopes TEXT[]` ⊆ `{read, write, admin}`. `enabled`.
 - **`fingerprints`** — the shared catalog. Key columns:
   - `phash_hex`, plus the compatibility triple `(algorithm, algorithm_version,
@@ -93,15 +93,15 @@ immune to clock skew and same-millisecond ordering bugs, and pages with strict
 
 The shared dataset is security-relevant, so deletion power is conservative:
 
-- A consumer may **hard-delete only its own** contributions (soft-delete →
+- A consumer may **soft-delete only its own** contributions (status change →
   tombstone).
 - A consumer that disagrees with **someone else's** row can only **flag** it.
   Once `FINGERPRINTHUB_AUTO_HIDE_FLAG_THRESHOLD` distinct consumers flag a row it
   auto-hides (excluded from sync/browse; a tombstone propagates). An `admin`
-  scope can hard-delete anything (held in reserve; not issued to any consumer
+  scope can soft-delete anything (held in reserve; not issued to any consumer
   yet).
 
-This means one server's mistake or bad actor can't silently delete protection
+This means one client's mistake or bad actor can't silently delete protection
 for everyone. Finer trust tuning (scaling the threshold to consumer count,
 review queues, unhide flows) is intentionally deferred until a second consumer
 actually exists.
@@ -111,7 +111,9 @@ actually exists.
 - No image handling / pHash computation / Hamming matching (all client-side).
 - No cross-consumer near-duplicate dedup beyond exact `(phash_hex, consumer_id)`
   — clients dedup against their own local fuzzy model.
-- No external network exposure — binds `127.0.0.1` only.
+- No direct external network exposure — the default bind address is
+  `127.0.0.1`; production deployments should use a TLS-terminating reverse
+  proxy.
 
 See [CLIENT_INTEGRATION.md](CLIENT_INTEGRATION.md) for how a client consumes all
 this, and [API.md](API.md) for the endpoint reference.

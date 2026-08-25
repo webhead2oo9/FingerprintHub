@@ -1,8 +1,8 @@
 # FingerprintHub
 
-Standalone shared scam-image **perceptual-hash (pHash) fingerprint** service.
-Multiple Discord bots/servers contribute fingerprints of known-bad images and
-sync each other's, so a scam image caught on one server protects the others.
+Standalone shared **perceptual-hash (pHash) fingerprint** service for community
+safety tools. Multiple clients contribute fingerprints of known-bad images and
+sync each other's, so an image identified by one community can protect others.
 
 The hub only stores and serves `phash_hex` text. It never decodes images or
 computes hashes — clients compute pHashes and match them **locally**
@@ -15,15 +15,15 @@ never on a consumer's moderation hot path.
   protocol (`sync_seq`, tombstones), trust model.
 - [docs/API.md](docs/API.md) — full endpoint reference with request/response
   examples.
-- [docs/OPERATIONS.md](docs/OPERATIONS.md) — deploy, systemd, consumer management,
-  backups, troubleshooting.
-- [docs/CLIENT_INTEGRATION.md](docs/CLIENT_INTEGRATION.md) — how a bot becomes a
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — deployment, consumer management,
+  backups, and troubleshooting.
+- [docs/CLIENT_INTEGRATION.md](docs/CLIENT_INTEGRATION.md) — how a client becomes a
   consumer (the cache model, the four flows, backfill).
-- `CLAUDE.md` — guidance for AI agents working in this repo.
+- `AGENTS.md` — guidance for coding agents working in this repository.
 
 ## Design notes
 
-- **Multi-tenant auth**: each consumer (bot) holds one API key (`fph_…`) sent
+- **Multi-tenant auth**: each consumer holds one API key (`fph_…`) sent
   in `X-API-Key`. Only its SHA-256 hash is stored. Scopes: `read`, `write`,
   `admin`.
 - **Incremental sync** on a monotonic `sync_seq` cursor. `sync_seq` advances on
@@ -35,13 +35,12 @@ never on a consumer's moderation hot path.
 - **Compatibility triple**: clients may filter sync by
   `(algorithm, algorithm_version, normalization_version)` so they only ingest
   fingerprints they can actually compare against.
-- **Trust model**: a consumer may hard-delete only its own rows; it can `flag`
+- **Trust model**: a consumer may soft-delete only its own rows; it can `flag`
   others'. A row auto-hides once `FINGERPRINTHUB_AUTO_HIDE_FLAG_THRESHOLD`
   distinct consumers flag it. (Finer trust tuning is deferred until a second
   consumer exists.)
 - **Encryption**: `reason` / `source_url` are encrypted at rest (AES-GCM,
-  envelope `enc:v1:…`) and redacted from non-owners. Keys are independent from
-  Nexarion's.
+  envelope `enc:v1:…`) and redacted from non-owners.
 
 ## API (`/v1`)
 
@@ -73,13 +72,14 @@ FINGERPRINTHUB_TEST_DATABASE_URL=$FINGERPRINTHUB_DATABASE_URL venv/bin/python -m
 venv/bin/python main.py                                    # serve on 127.0.0.1:58751
 ```
 
-## Production
+## Deployment
 
-Runs against the host's **native** `postgresql.service` (its own
-`fingerprinthub` role + database), as a systemd unit `FingerprintHub.service`
-on `127.0.0.1:58751`. See the deployment checklist in the project plan. Mint a
+Keep the service bound to `127.0.0.1` and expose it through a TLS-terminating
+reverse proxy. Use a dedicated Postgres role and database, keep `.env`
+permissions restrictive, and apply migrations before starting the service. See
+[docs/OPERATIONS.md](docs/OPERATIONS.md) for a deployment checklist. Mint a
 consumer key with:
 
 ```bash
-venv/bin/python tools/create_consumer.py --name nexarion --scopes read,write
+venv/bin/python tools/create_consumer.py --name community-client --scopes read,write
 ```

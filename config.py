@@ -1,10 +1,9 @@
 """Flat environment-variable configuration for FingerprintHub.
 
 The service has a small, flat config surface (host/port + a few knobs), so it
-reads straight from the environment rather than a JSON config file like
-Nexarion. The Postgres DSN itself comes from ``FINGERPRINTHUB_DATABASE_URL``
-(read inside ``utils.postgres_utils``); ``postgres_config()`` returns the dict
-shape that helper expects.
+reads straight from the environment. The Postgres DSN itself comes from
+``FINGERPRINTHUB_DATABASE_URL`` (read inside ``utils.postgres_utils``);
+``postgres_config()`` returns the dict shape that helper expects.
 """
 
 from __future__ import annotations

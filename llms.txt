@@ -1,431 +1,92 @@
-# FingerprintHub — LLM integration guide
+# FingerprintHub
 
-> Self-contained brief for an LLM/agent that needs to understand, integrate
-> with, or contribute to FingerprintHub. If you read only one file, read this.
-> Human-oriented detail lives in README.md and docs/.
+FingerprintHub is a small multi-tenant service for sharing perceptual image
+fingerprints between community-safety clients. It stores pHash text and related
+metadata; clients calculate hashes, perform local matching, and enforce their
+own policies.
 
-## What this is
+## Important files
 
-FingerprintHub is a small, standalone, **multi-tenant** HTTP service that
-shares **perceptual-hash (pHash) fingerprints of known-bad scam images** across
-multiple Discord bots/servers. One server fingerprints a scam image → every
-participating server can recognize it without redoing the manual review.
+- `README.md`: project overview and local setup
+- `AGENTS.md`: repository architecture and development constraints
+- `docs/API.md`: HTTP API reference
+- `docs/ARCHITECTURE.md`: data model, sync protocol, and trust model
+- `docs/CLIENT_INTEGRATION.md`: recommended client cache and synchronization
+  flows
+- `docs/OPERATIONS.md`: generic deployment, secrets, migration, backup, and
+  troubleshooting guidance
+- `.env.example`: runtime configuration reference
 
-Stack: Python 3.13+, aiohttp (async HTTP), psycopg 3 (synchronous Postgres
-driver, offloaded to a thread pool so it never blocks the event loop), Alembic
-migrations, AES-GCM field encryption for sensitive text.
+## Runtime
 
-**The hub is deliberately dumb about images.** It only stores and serves the
-`phash_hex` string. It NEVER decodes images, computes pHashes, or does Hamming
-matching. All of that happens client-side. The hub is a **sync source +
-contribution target**, never on a client's moderation hot path.
+- Python 3.13+
+- aiohttp HTTP server
+- Postgres through psycopg and psycopg-pool
+- Alembic schema migrations
+- AES-GCM application-level encryption for `reason` and `source_url`
+- localhost-only default bind on port 58751
 
-First consumer is Nexarion (sibling repo at `/home/webhead/VRDiscord/Nexarion`),
-but the hub is consumer-agnostic: any bot that can compute a compatible pHash
-and speak the HTTP API below can join.
+The service requires `FINGERPRINTHUB_DATABASE_URL` and field-encryption key
+configuration. Startup verifies that the database is reachable and exactly at
+the repository's Alembic head.
 
-## Mental model in one paragraph
+## Authentication and authorization
 
-Each client bot keeps its OWN local fingerprint store + in-memory index and
-matches messages locally (network-free hot path). In the background it pulls
-incremental updates from the hub (`GET /v1/fingerprints/sync`), upserting peer
-fingerprints locally and deleting tombstones. When staff mark a new image, the
-client writes locally first, then contributes to the hub in the background.
-Enforcement "hit" reports are fire-and-forget. So the hub is a **replication
-backplane**, not a lookup service you call per-message.
+Every endpoint except `GET /v1/health` requires `X-API-Key`. Raw keys are
+generated with high entropy and only their SHA-256 hashes are stored. Consumers
+can independently hold `read`, `write`, and `admin` scopes. Requests are rate
+limited per consumer.
 
-## How to talk to it
+## HTTP API
 
-- Base URL: wherever the hub is deployed; default bind is `127.0.0.1:58751`
-  (`FINGERPRINTHUB_HOST`/`_PORT`). Localhost-only by default — no public network
-  exposure. A client runs on the same host (or tunnels in).
-- Every endpoint except `GET /v1/health` requires `X-API-Key: fph_…`. The raw
-  key is never stored; only its sha256 hash is. Get a key from an operator
-  (`tools/create_consumer.py`).
-- Scopes are independent flags (NOT hierarchical): `read`, `write`, `admin`.
-  Most integrations get `read,write`. `admin` is held in reserve, not issued.
-- Error bodies are JSON `{"error": "..."}`; `409` also includes `existing_id`.
-- DB outage → `503 {"error": "database temporarily unavailable"}` on any
-  endpoint; `/v1/health` then returns `503 {"status": "degraded", "db": false}`.
-- Rate-limited per consumer (default 300 req/min → `429`; in-memory sliding
-  window, resets on hub restart).
+- `GET /v1/health`: liveness and database health
+- `GET /v1/fingerprints/sync`: incremental peer synchronization
+- `POST /v1/fingerprints`: contribute a fingerprint
+- `GET /v1/fingerprints`: browse active fingerprints
+- `GET /v1/fingerprints/{id}`: retrieve one fingerprint
+- `POST /v1/fingerprints/{id}/hit`: record a match
+- `POST /v1/fingerprints/{id}/flag`: flag a peer contribution
+- `DELETE /v1/fingerprints/{id}`: soft-delete an owned or admin-accessible row
+- `GET /v1/fingerprints/stats`: aggregate statistics
 
-## API reference (all paths under `/v1`)
+See `docs/API.md` for request fields and response shapes.
 
-| Method | Path | Scope | Purpose |
-|---|---|---|---|
-| GET | `/v1/health` | none | liveness + DB ping → `{"status":"ok","db":true}` |
-| GET | `/v1/fingerprints/sync` | read | incremental pull (the core of integration) |
-| POST | `/v1/fingerprints` | write | contribute a fingerprint |
-| POST | `/v1/fingerprints/{id}/hit` | write | record enforcement (stats only) |
-| POST | `/v1/fingerprints/{id}/flag` | write | flag someone else's row; idempotent; auto-hides at threshold |
-| DELETE | `/v1/fingerprints/{id}` | write | soft-delete YOUR OWN row (or admin: any) |
-| GET | `/v1/fingerprints/{id}` | read | detail; secrets gated to owner/admin |
-| GET | `/v1/fingerprints` | read | browse (filters: category, algorithm, consumer_id, limit, offset) |
-| GET | `/v1/fingerprints/stats` | read | aggregates only |
+## Synchronization invariants
 
-### GET /v1/fingerprints/sync — the endpoint you must implement against
+- `sync_seq` is a monotonic Postgres sequence used as the client cursor.
+- It advances only on content changes: insert, resurrection, hide, and delete.
+- Hit statistics and sub-threshold flags do not advance it.
+- Deleted and hidden rows remain as tombstones so peers can remove local copies.
+- A consumer's sync feed excludes its own contributions.
+- Compatibility filters prevent clients from mixing incompatible algorithms or
+  normalization strategies.
 
-Query params: `since` (last durably-applied `sync_seq`; default `0`), `limit`
-(clamped to `[1, 500]`, default `200`), and optional compatibility filter
-`algorithm`, `algorithm_version`, `normalization_version`.
+## Client behavior
 
-Returns rows with `sync_seq > since`, **including hidden/deleted tombstones**,
-**excluding the caller's own contributions**. Omits `reason`/`source_url` and
-hit stats.
+Clients should keep a local persistent store and in-memory matching index. The
+hub is a background synchronization and contribution service, not a dependency
+on the moderation hot path. Clients should apply each sync page durably before
+advancing their saved watermark.
 
-```json
-{
-  "fingerprints": [
-    {"id": 48, "sync_seq": 48, "phash_hex": "0123…", "algorithm": "phash",
-     "algorithm_version": "imagehash.phash", "normalization_version": "alpha_white_v1",
-     "category": "scam", "action": "timeout", "consumer_id": 2,
-     "source_guild_id": null, "added_at_ms": 1782…, "updated_at_ms": 1782…,
-     "auto_added": false, "provenance": "manual_staff", "status": "active"}
-  ],
-  "next_since": 48,
-  "has_more": false
-}
-```
-
-Client contract: apply the page, THEN set your watermark to `next_since` (after,
-not before, durably persisting). If `has_more`, immediately request again with
-`since=next_since`. For `status` in `{hidden, deleted}`, remove the row locally
-(it's a tombstone).
-
-### POST /v1/fingerprints — contribute
-
-```json
-{"phash_hex": "0123456789abcdef", "category": "scam", "action": "timeout",
- "algorithm": "phash", "algorithm_version": "imagehash.phash",
- "normalization_version": "alpha_white_v1",
- "source_guild_id": "…", "reason": "…", "source_url": "…",
- "auto_added": false, "provenance": "manual_staff"}
-```
-
-- `phash_hex`: required, 16 lowercase hex.
-- `category`: required, one of `scam|nsfw|crypto|phishing|other`.
-- `action`: required, one of `kick|timeout` (a softban-intent hint; clients may
-  honor or override locally).
-- The compatibility triple `algorithm/algorithm_version/normalization_version`
-  defaults to `phash` / `imagehash.phash` / `alpha_white_v1` — the reference
-  recipe under "Computing a compatible pHash" below. Use YOUR triple if your
-  preprocessing differs, and filter sync on it.
-- `reason`/`source_url` are encrypted at rest and redacted from non-owners.
-- `201` → created row (owner sees secrets). `409 {"error":"duplicate…",
-  "existing_id":N}` → a live row already exists for this `(phash_hex, consumer)`.
-  `400` → invalid input.
-
-### The other endpoints (quick)
-
-- `POST /v1/fingerprints/{id}/hit` — body `{"guild_id":"…","distance":2}` (all
-  optional). Bumps `hit_count`/`last_hit_at_ms`; does NOT advance `sync_seq`.
-  Returns `{"id":N,"hit_count":M}`; `404` if missing/deleted.
-- `POST /v1/fingerprints/{id}/flag` — body `{"reason":"…"}` (optional).
-  Idempotent per consumer. Auto-hides the row once
-  `FINGERPRINTHUB_AUTO_HIDE_FLAG_THRESHOLD` (default 2) DISTINCT consumers flag
-  it. Response shows current `flag_count`/`status`/`hidden`.
-- `DELETE /v1/fingerprints/{id}` — soft-delete (tombstone). `204` if you own it
-  or hold `admin`; `403` if you don't own it (use `/flag` instead); `404` if
-  already gone.
-- `GET /v1/fingerprints/{id}` — full record; `reason`/`source_url` are `null`
-  unless you own the row or hold `admin`; a `hidden` row → `404` for non-owners.
-- `GET /v1/fingerprints` — browse; default `limit=50` (max 200);
-  `include_hidden` honored only with `admin`.
-- `GET /v1/fingerprints/stats` — `total_active/hidden/deleted`, `total_hits`,
-  `by_category`, `by_provenance`, `active_consumers`.
-
-## The sync protocol (why it's designed this way)
-
-- **`sync_seq`** is a monotonic value from a Postgres sequence, NOT a timestamp.
-  This makes sync immune to clock skew and same-millisecond ordering bugs;
-  pages use strict `>` on it.
-- **`sync_seq` advances on CONTENT changes only** (insert, resurrect, status
-  flips hide/delete). It is NOT touched by stats-only writes (hits,
-  sub-threshold flags). So a popular fingerprint that gets hits every minute
-  does NOT churn every client's sync feed.
-- **Tombstones**: deletes are soft (`status='deleted'`) and hides set
-  `status='hidden'`; both get a fresh `sync_seq` so they propagate. Clients
-  delete these locally. Physical purge is a deferred retention concern.
-- **The feed excludes your own contributions** (`consumer_id <> requester`) —
-  so you never re-ingest your own rows. Use ONE key per bot for both sync and
-  contribute, or you'll lose this property.
-- **Compatibility filter**: pass your triple so you only ingest hashes you can
-  actually Hamming-compare against.
-
-## Trust model (cross-consumer, security-relevant dataset)
-
-- You may **hard-delete only your OWN** contributions (→ tombstone).
-- You may only **flag** someone else's row. Once enough distinct consumers flag
-  it (default 2), it auto-hides (and a hide-tombstone propagates to everyone).
-- `admin` scope can delete anything (held in reserve; not issued to any
-  consumer yet).
-- This means one server's mistake or bad actor can't silently delete protection
-  for everyone.
-
-## Computing a compatible pHash (the reference triple, exactly)
-
-The hub never validates hashes — compatibility is a client-side contract, and
-an almost-right implementation produces hashes that silently never match
-anyone's. Three production consumers (Nexarion, VRDHelper, EmuVR Invites)
-interoperate with EXACTLY this recipe (from Nexarion's
-`helpers/scam_detection/fingerprint_hash.py`); copy it, don't approximate it:
-
-```python
-import io
-import imagehash
-from PIL import Image
-
-def compute_phash_hex(image_bytes: bytes) -> str:
-    with Image.open(io.BytesIO(image_bytes)) as image:
-        image.load()                    # animated images: frame 0 only (no seek)
-        # alpha_white_v1: flatten transparency onto opaque WHITE.
-        # Non-transparent modes pass through UNCHANGED (no forced RGB convert —
-        # imagehash grayscales internally).
-        if image.mode in ("RGBA", "LA") or (
-            image.mode == "P" and "transparency" in image.info
-        ):
-            rgba = image.convert("RGBA")
-            background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
-            image = Image.alpha_composite(background, rgba).convert("RGB")
-        phash = int(str(imagehash.phash(image)), 16)  # defaults: hash_size=8 → 64-bit
-    return format(phash & ((1 << 64) - 1), "016x")    # 16 lowercase hex, zero-padded
-```
-
-- `imagehash.phash` is called with DEFAULT args (`hash_size=8`,
-  `highfreq_factor=4`): grayscale → 32×32 → DCT → top-left 8×8 vs median →
-  64-bit hash → `"016x"` gives the wire format.
-- **Matching is client-side Hamming** (XOR + popcount) over your local index —
-  the hub does none. Production tolerance is 5–6 bits; Nexarion clamps to 0–16
-  (beyond ~16 bits on 64 you get chance collisions).
-- **Pin your imaging libs** (consumers pin `Pillow==12.2.0`,
-  `ImageHash==4.3.2`) and verify hash parity against a known image before
-  trusting your integration — library-version drift breaks cross-consumer
-  matching silently.
-- Client-side input hygiene is YOUR job: consumers cap downloads at 8 MiB,
-  guard decompression bombs (50M-pixel cap), and only process
-  `png/jpeg/webp/gif`.
-
-## The integration pattern (implement this, don't be naive)
-
-**Do NOT call the hub on your moderation hot path.** Keep your existing local
-store + in-memory index and treat the hub as a sync source + contribution
-target. Matching stays exactly as fast as a local-only implementation and has
-no hard dependency on the hub being reachable at startup (load from local DB at
-boot).
-
-The minimal viable client is just **sync + contribute + hit** (VRDHelper ships
-exactly this; removals reach it via sync tombstones). `/flag` and `DELETE` are
-for moderation flows — add them when staff can remove fingerprints locally.
-`action` is advisory: existing consumers override it with their own configured
-enforcement rather than honoring the contributor's choice.
-
-### Local schema additions on YOUR side
-
-- `hub_fingerprint_id` (nullable) — the hub row id once linked.
-- `origin` (`local` | `hub`) — `local` = you contributed it; `hub` = synced
-  from a peer. Drives delete-vs-flag behavior.
-- a single-row **sync watermark** (`last_sync_seq BIGINT`).
-- a **suppression** table keyed by `hub_fingerprint_id` — rows a moderator
-  removed locally, so sync won't resurrect them.
-- a partial unique index on `hub_fingerprint_id WHERE NOT NULL` for upserts.
-
-### The four flows (pseudocode)
-
-**Sync (background, every ~300s):**
-```
-watermark = read local watermark
-loop:
-  GET /v1/fingerprints/sync?since=watermark&limit=200&algorithm=…&…=…
-  for row in fingerprints:
-     if triple(row) != your triple:            continue   # defensive
-     if row.status in (hidden, deleted):       delete local row by hub id; continue
-     if hub id in suppressions:                continue
-     if row.action/category not in your enums: skip (log)   # poison-pill guard
-     upsert local row (origin='hub', hub_fingerprint_id=row.id)
-  persist watermark = next_since   # AFTER applying the page
-  stop when has_more is false
-if anything changed: rebuild in-memory index
-```
-Isolate per-row failures so one bad row can't break a whole page.
-
-**Contribute (staff marks an image):**
-```
-insert locally now (origin='local')  -> return LOCAL id to the UI immediately
-background:
-  POST /v1/fingerprints {phash_hex, category, action, triple, reason?, source_url?, …}
-  on 201 -> stamp local row: hub_fingerprint_id = resp.id
-  on 409 -> stamp with resp.existing_id   # a prior attempt already landed it
-  on error -> leave unlinked; next contribute/backfill reconciles
-```
-
-**Remove (staff removes a fingerprint):**
-```
-delete locally
-if origin == 'local' and hub_fingerprint_id:  DELETE /v1/fingerprints/{hub_id}   (fire-and-forget)
-if origin == 'hub'  and hub_fingerprint_id:
-     add hub_id to local suppression (AWAIT this — must beat the next sync)
-     POST /v1/fingerprints/{hub_id}/flag                                       (fire-and-forget)
-```
-
-**Hit (after enforcement):**
-```
-bump local hit_count as before
-fire-and-forget POST /v1/fingerprints/{hub_id}/hit   (only if row has a hub id)
-```
-Schedule fire-and-forget tasks from async code with a running event loop — not
-from inside a thread-pool DB call.
-
-### Config knobs (recommended on YOUR side)
-
-Gate behind an enable flag defaulted **OFF**, plus base URL + API key from env,
-so you can ship the code + schema migration first (inert), then flip it on:
-`hub_enabled` (bool), `hub_base_url`, `hub_sync_interval_seconds` (~300),
-`hub_request_timeout_seconds` (~5), and the API key in env. (Nexarion calls
-these `image_fingerprint_hub_*` and ALSO requires allowlisting them in
-`Nexarion/utils/config_validation/moderation_engine.py` or it crash-loops.)
-
-### One-time backfill
-
-Seed the hub with your existing catalog: read local rows with
-`hub_fingerprint_id IS NULL`, `POST` each, stamp the returned id back locally.
-Make it idempotent (skip already-linked rows; treat `409` as success via
-`existing_id`) so it's safely resumable. No reference script exists yet —
-existing consumers only contribute on new adds, so pre-integration rows stay
-unlinked until you write this.
-
-### Gotchas (the ones that bite)
-
-- The hub excludes your own contributions from your sync feed — but only if you
-  contribute under the SAME key you sync with. One key per bot.
-- Advance the watermark to `next_since` AFTER applying the page, not before.
-- Suppression on remove of a `hub`-origin row is what stops the next sync from
-  resurrecting it (a single flag won't hide it hub-side until the threshold).
-- Your pHash preprocessing MUST match the triple you claim, or your hashes
-  aren't Hamming-comparable to peers and the whole thing is useless. The
-  reference triple is `phash` / `imagehash.phash` / `alpha_white_v1`.
-- Re-contributing a `(phash_hex, consumer)` pair resurrects only DELETED rows.
-  If YOUR row was auto-HIDDEN by peer flags, contribute returns `409` with its
-  id and the row stays hidden — dispute it with an operator, don't retry.
-
-## Data model (for context; you don't write to it directly)
-
-Tables in `alembic/versions/0001_init.py`:
-
-- **`consumers`** — one row per bot. `api_key_hash` = sha256(raw key) (raw key
-  never stored). `scopes TEXT[]` ⊆ `{read,write,admin}`. `enabled`.
-- **`fingerprints`** — the shared catalog. `phash_hex`; compatibility triple
-  `(algorithm, algorithm_version, normalization_version)`; `category` ∈
-  {scam,nsfw,crypto,phishing,other}; `action` ∈ {kick,timeout}; `consumer_id`
-  (owner); `reason`/`source_url` (encrypted at rest); `status` ∈
-  {active,hidden,deleted}; `flag_count`; `sync_seq` (the cursor);
-  `hit_count`/`last_hit_at_ms` (stats, never synced). `UNIQUE(phash_hex,
-  consumer_id)`.
-- **`fingerprint_hits`** — per-hit audit rows (who enforced, where, distance).
-- **`fingerprint_flags`** — one row per (fingerprint, flagging consumer); drives
-  auto-hide; `UNIQUE(fingerprint_id, consumer_id)` makes flag idempotent.
-
-## Repository layout
-
-```
-main.py                      entrypoint: validate Postgres@head -> pool -> create_app -> run
-config.py                    flat env-var config (ServiceConfig)
-api/app.py                   aiohttp app factory; route table; error + auth middleware
-api/auth.py                  X-API-Key -> sha256 lookup -> scope + rate-limit
-api/fingerprints.py          HTTP handlers; validation + presentation/redaction
-api/fingerprint_store.py     DB CRUD; sync_seq + tombstone invariants live here
-api/consumers_store.py       consumer rows + API-key primitives
-api/errors.py                handle_errors decorator, parse_json_body
-utils/                       postgres_utils, field_encryption, async_utils,
-                             config_access, time_utils
-alembic/                     schema history (0001_init); forward migrations only
-tools/create_consumer.py     operator CLI: mint a consumer + one-time API key
-tools/generate_field_key.py  operator CLI: generate an AES-256 field-encryption key
-docs/                        API.md, ARCHITECTURE.md, CLIENT_INTEGRATION.md, OPERATIONS.md
-tests/                       Postgres-backed, DESTRUCTIVE (TRUNCATE); skipped unless DSN set
-```
-
-## Environment variables (all `FINGERPRINTHUB_`-prefixed)
-
-- `FINGERPRINTHUB_DATABASE_URL` — Postgres DSN (required). Prod points at the
-  host's native `postgresql.service`, `127.0.0.1:5432/fingerprinthub`. Local
-  dev uses docker-compose Postgres on `:54330`.
-- `FINGERPRINTHUB_FIELD_ENCRYPTION_KEYS` — `keyid:base64(32-byte AES key)`,
-  comma-separated; INDEPENDENT from Nexarion's keys (separate blast radius).
-- `FINGERPRINTHUB_FIELD_ENCRYPTION_ACTIVE_KEY_ID` — which key id encrypts new
-  `reason`/`source_url`. Back up the keys durably and SEPARATELY — losing them
-  loses those fields forever.
-- `FINGERPRINTHUB_HOST` / `FINGERPRINTHUB_PORT` — bind (default
-  `127.0.0.1:58751`).
-- Optional knobs (defaults shown): `FINGERPRINTHUB_RATE_LIMIT=300`,
-  `FINGERPRINTHUB_AUTO_HIDE_FLAG_THRESHOLD=2`, `FINGERPRINTHUB_MAX_SYNC_LIMIT=500`,
-  `FINGERPRINTHUB_DEFAULT_SYNC_LIMIT=200`, `FINGERPRINTHUB_MAX_LIST_LIMIT=200`,
-  `FINGERPRINTHUB_BLOCKING_IO_MAX_WORKERS=16`, `FINGERPRINTHUB_LOG_LEVEL=INFO`.
-
-`.env.example` is a fill-in-the-blanks template. Secrets live ONLY in `.env`
-(chmod 600, gitignored). Never committed.
-
-## Commands
+## Development
 
 ```bash
-# ---- bootstrap on a fresh machine (ordered) ----
-python3.13 -m venv venv && venv/bin/pip install -r requirements.txt
-cp .env.example .env                        # then fill in the values below
-docker compose up -d                        # dev-only Postgres on :54330
-                                            # (prod: native Postgres, own role+db)
-venv/bin/python tools/generate_field_key.py --key-id v1   # paste output into .env
-venv/bin/alembic upgrade head               # required BEFORE first start
-venv/bin/python tools/create_consumer.py --name mybot --scopes read,write
-venv/bin/python main.py                     # serve
-curl -s http://127.0.0.1:58751/v1/health    # → {"status":"ok","db":true}
-
-# ---- day-to-day ----
-# serve (prod: systemd unit FingerprintHub.service on 127.0.0.1:58751)
-venv/bin/python main.py
-
-# migrations
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+docker compose up -d
 venv/bin/alembic upgrade head
-venv/bin/alembic revision -m "describe"     # scaffold a FORWARD migration only
-
-# operator CLIs
-venv/bin/python tools/generate_field_key.py --key-id v1
-venv/bin/python tools/create_consumer.py --name nexarion --scopes read,write
-
-# tests — Postgres-backed and DESTRUCTIVE (TRUNCATE all tables); skipped
-# unless the DSN env var is set. Point ONLY at a disposable DB already at head.
-FINGERPRINTHUB_TEST_DATABASE_URL=<disposable-db> venv/bin/python -m pytest
+venv/bin/python main.py
 ```
 
-## Production discipline (this host IS production)
+Tests truncate all application tables. Run them only with
+`FINGERPRINTHUB_TEST_DATABASE_URL` pointing to a disposable, migrated database.
 
-- Runs against the host's **native** `postgresql.service` with its own
-  `fingerprinthub` role + database — NOT the `docker-compose.yml` in this repo
-  (that's local-dev only, port 54330).
-- Runs as systemd unit `FingerprintHub.service` on `127.0.0.1:58751`. Do NOT
-  create/enable/start/restart the unit or touch the production DB without
-  explicit approval.
-- Startup REQUIRES the DB at Alembic head (it validates, does not auto-migrate).
-  Add forward migrations; never edit `0001_init.py` once applied.
-- Encryption keys are independent from Nexarion's.
+## Change constraints
 
-## Conventions
-
-- Conventional Commit prefixes, imperative mood (e.g. `fix: return 409 on
-  concurrent duplicate contribute`).
-- Migrations use raw SQL (`op.execute`) with `IF NOT EXISTS` / `ON CONFLICT DO
-  NOTHING`, matching Nexarion's conventions.
-- psycopg is synchronous: every DB call in a handler is wrapped in
-  `run_blocking_io(...)` (a bounded thread pool) so it never blocks the aiohttp
-  event loop.
-
-## Where to look for more
-
-- `README.md` — overview + quickstart.
-- `docs/ARCHITECTURE.md` — components, data model, sync protocol, trust model.
-- `docs/API.md` — full endpoint reference with examples.
-- `docs/CLIENT_INTEGRATION.md` — the cache model + four flows (the canonical
-  client recipe; Nexarion's `helpers/scam_detection/fingerprint_store.py` is the
-  reference implementation).
-- `docs/OPERATIONS.md` — deploy, systemd, consumer management, backups,
-  troubleshooting.
-- `CLAUDE.md` — guidance for AI agents working IN this repo.
+- Keep blocking psycopg calls inside `run_blocking_io(...)` when called from an
+  HTTP handler.
+- Preserve the `sync_seq` and tombstone behavior unless intentionally revising
+  the synchronization protocol.
+- Add forward migrations; never modify a migration already applied to a shared
+  database.
+- Never commit `.env`, database credentials, API keys, or field-encryption keys.

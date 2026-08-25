@@ -25,10 +25,12 @@ async def test_invalid_key_is_401(client):
 
 
 async def test_disabled_consumer_is_401(client, pool, make_consumer):
-    _cid, key = make_consumer("disabled-bot", ["read"])
+    _cid, key = make_consumer("disabled-client", ["read"])
     with pool.connection() as conn:
         with conn.transaction():
-            conn.execute("UPDATE consumers SET enabled = FALSE WHERE name = 'disabled-bot'")
+            conn.execute(
+                "UPDATE consumers SET enabled = FALSE WHERE name = 'disabled-client'"
+            )
     resp = await client.get("/v1/fingerprints/stats", headers=auth(key))
     assert resp.status == 401
 

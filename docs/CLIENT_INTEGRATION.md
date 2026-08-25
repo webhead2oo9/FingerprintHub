@@ -1,22 +1,21 @@
 # FingerprintHub — Client Integration Guide
 
-How a Discord bot becomes a FingerprintHub consumer. Nexarion is the reference
-implementation (`helpers/scam_detection/fingerprint_store.py`); this guide
-generalizes it.
+How a community-safety client becomes a FingerprintHub consumer.
 
 ## Prerequisites
 
 1. An API key: an operator runs
-   `tools/create_consumer.py --name <bot> --scopes read,write` and gives you the
-   `fph_…` key. Store it in your bot's env, never in committed config.
-2. Your bot must compute pHashes **the same way** as other participating clients
+   `tools/create_consumer.py --name <client> --scopes read,write` and gives you
+   the `fph_…` key. Store it in the client's environment, never in committed
+   configuration.
+2. Your client must compute pHashes **the same way** as other participants
    — same `algorithm` / `algorithm_version` / `normalization_version` triple
    (the reference triple is `phash` / `imagehash.phash` / `alpha_white_v1`:
    `imagehash.phash` over the image flattened onto a white background for alpha).
    If your preprocessing differs, your hashes are NOT Hamming-comparable and you
    must use (and filter sync on) your own triple.
 
-## The cache model (do this, not a naive remote client)
+## The cache model
 
 **Do not** call the hub on your moderation hot path. Keep your existing local
 store + in-memory index and treat the hub as a sync source + contribution
@@ -104,15 +103,15 @@ then flip it on as a separate step. Recommended: `hub_enabled` (bool),
 To seed the hub with your existing catalog: read local rows that aren't linked
 (`hub_fingerprint_id IS NULL`), `POST` each, and stamp the returned id back
 locally. Make it idempotent (skip already-linked rows; treat `409` as success
-using `existing_id`) so it's safely resumable. No reference script exists yet —
-Nexarion only contributes on new adds, so rows created before its hub
-integration stay unlinked until backfilled.
+using `existing_id`) so it's safely resumable. No reference backfill script is
+included, so clients should implement this flow for their own local schema and
+retry model.
 
 ## Gotchas
 
 - The hub **excludes your own contributions** from your sync feed, so you never
   re-ingest your own rows — but only if you contribute under the same consumer
-  key you sync with. Use one key per bot.
+  key you sync with. Use one key per client.
 - Advance the watermark to `next_since` **after** applying the page, not before.
 - Suppression on remove of a `hub`-origin row is what stops the next sync from
   resurrecting it (a single flag won't hide it hub-side until the threshold).

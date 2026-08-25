@@ -1,4 +1,4 @@
-"""Shared Postgres helpers for FingerprintHub (ported from Nexarion)."""
+"""Postgres connection and schema-validation helpers for FingerprintHub."""
 
 from __future__ import annotations
 

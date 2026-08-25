@@ -1,8 +1,4 @@
-"""Standardized error handling for FingerprintHub HTTP handlers.
-
-Ported from Nexarion's ``utils/error_handling.py`` (generic, no Nexarion
-specifics).
-"""
+"""Standardized error handling for FingerprintHub HTTP handlers."""
 
 from __future__ import annotations
 
