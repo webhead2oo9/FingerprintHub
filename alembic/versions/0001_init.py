@@ -5,9 +5,9 @@ Revises:
 Create Date: 2026-06-30
 
 Schema for the shared image-fingerprint service. Consumers authenticate with
-per-key hashes and contribute/sync perceptual-hash
-fingerprints. A monotonic ``sync_seq`` (advanced on content changes, NOT on
-stats-only updates) drives incremental, tombstone-capable sync.
+per-key hashes and contribute/sync perceptual-hash fingerprints. A monotonic
+``sync_seq`` (advanced on content changes, not on stats-only updates) drives
+incremental, tombstone-capable sync.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def upgrade() -> None:
     )
 
     # Monotonic cursor for incremental sync. Advanced on insert and on every
-    # content-changing update (status flips, edits) but NEVER on stats-only
+    # content-changing update (status flips, edits), but never on stats-only
     # updates (hit_count/last_hit_at) so popular fingerprints don't churn sync.
     op.execute("CREATE SEQUENCE IF NOT EXISTS fingerprints_sync_seq")
 

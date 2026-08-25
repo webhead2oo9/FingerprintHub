@@ -1,10 +1,10 @@
 """Fingerprint persistence layer for FingerprintHub.
 
-Pure DB CRUD — no perceptual-hash matching happens server-side (clients match
-locally in-memory). Two invariants this module enforces:
+Pure DB CRUD. No perceptual-hash matching happens server-side; clients match
+locally in memory. Two invariants this module enforces:
 
 * ``sync_seq`` (the incremental-sync cursor) is advanced via
-  ``nextval('fingerprints_sync_seq')`` ONLY on content changes — inserts,
+  ``nextval('fingerprints_sync_seq')`` only on content changes: inserts,
   resurrections, status flips (hide/delete). Stats-only writes (hit_count,
   last_hit, sub-threshold flag counts) never touch it, so popular fingerprints
   don't churn every client's sync.
@@ -24,9 +24,9 @@ from utils.field_encryption import encrypt_text
 VALID_ACTIONS = frozenset({"kick", "timeout"})
 VALID_CATEGORIES = frozenset({"scam", "nsfw", "crypto", "phishing", "other"})
 
-# Columns exposed via the sync feed. Deliberately excludes reason/source_url
-# (free-text incident notes never leave the owning consumer) and hit_count
-# (peer stats are not synced).
+# Columns exposed via the sync feed. Excludes reason/source_url (free-text
+# incident notes never leave the owning consumer) and hit_count (peer stats
+# are not synced).
 _SYNC_COLUMNS = (
     "id, sync_seq, phash_hex, algorithm, algorithm_version, normalization_version, "
     "category, action, consumer_id, source_guild_id, added_at_ms, updated_at_ms, "
@@ -174,10 +174,11 @@ def sync(
 ) -> Tuple[List[Dict[str, Any]], int, bool]:
     """Return (rows, next_since, has_more) for rows with sync_seq > since.
 
-    Excludes the requester's OWN contributions (they already have them locally;
+    Excludes the requester's own contributions (they already have them locally;
     re-ingesting would create duplicate local rows). Includes hidden/deleted
-    rows as tombstones so clients can remove them. Optional compatibility-triple
-    filter lets a client pull only fingerprints it can actually compare against.
+    rows as tombstones so clients can remove them. The optional
+    compatibility-triple filter lets a client pull only the fingerprints it can
+    compare against.
     """
     clauses = ["sync_seq > %s", "consumer_id <> %s"]
     params: List[Any] = [since_seq, requester_consumer_id]
@@ -214,7 +215,7 @@ def report_hit(
     now_ms: int,
 ) -> Optional[int]:
     """Record a hit and bump hit_count/last_hit_at. Returns new hit_count, or
-    None if the fingerprint is missing/deleted. Does NOT advance sync_seq."""
+    None if the fingerprint is missing/deleted. Does not advance sync_seq."""
     with pool.connection() as conn:
         with conn.transaction():
             fp = conn.execute(
@@ -250,13 +251,13 @@ def flag(
     """Record a flag (idempotent per consumer) and auto-hide once distinct
     flaggers reach the threshold. Returns {flag_count, status, hidden}, or None
     if the fingerprint is missing/deleted. Advances sync_seq only on the
-    active→hidden transition."""
+    transition from active to hidden."""
     with pool.connection() as conn:
         with conn.transaction():
             # FOR UPDATE serializes concurrent flaggers of the same fingerprint.
             # Without it, two flags racing to the threshold can each COUNT before
             # the other commits, both see a sub-threshold count, and neither
-            # hides — a miss that never self-heals once every consumer has flagged.
+            # hides. That miss never self-heals once every consumer has flagged.
             fp = conn.execute(
                 "SELECT id, status FROM fingerprints WHERE id = %s FOR UPDATE",
                 (fingerprint_id,),

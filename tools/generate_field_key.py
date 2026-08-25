@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a field-encryption key entry for FingerprintHub field encryption."""
+"""Generate a field-encryption key entry for FingerprintHub."""
 
 from __future__ import annotations
 

@@ -45,8 +45,9 @@ class ServiceConfig:
     def postgres_config(self) -> Dict[str, Any]:
         """Return the dict shape ``utils.postgres_utils`` consumes.
 
-        Empty ``database`` mapping means the DSN/pool settings come entirely
-        from env (``FINGERPRINTHUB_DATABASE_URL`` and the pool-size defaults).
+        An empty ``database`` mapping means the DSN comes from
+        ``FINGERPRINTHUB_DATABASE_URL`` and the pool sizes fall back to the
+        defaults in ``utils.postgres_utils``.
         """
         return {"database": {}}
 

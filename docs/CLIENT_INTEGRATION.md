@@ -1,44 +1,42 @@
-# FingerprintHub — Client Integration Guide
+# FingerprintHub Client Integration Guide
 
 How a community-safety client becomes a FingerprintHub consumer.
 
 ## Prerequisites
 
-1. An API key: an operator runs
+1. An API key. An operator runs
    `tools/create_consumer.py --name <client> --scopes read,write` and gives you
-   the `fph_…` key. Store it in the client's environment, never in committed
+   the `fph_...` key. Store it in the client's environment, never in committed
    configuration.
-2. Your client must compute pHashes **the same way** as other participants
-   — same `algorithm` / `algorithm_version` / `normalization_version` triple
-   (the reference triple is `phash` / `imagehash.phash` / `alpha_white_v1`:
-   `imagehash.phash` over the image flattened onto a white background for alpha).
-   If your preprocessing differs, your hashes are NOT Hamming-comparable and you
-   must use (and filter sync on) your own triple.
+2. pHashes computed the same way as every other participant: the same
+   `algorithm` / `algorithm_version` / `normalization_version` triple. The
+   reference triple is `phash` / `imagehash.phash` / `alpha_white_v1`, meaning
+   `imagehash.phash` over the image flattened onto a white background for
+   alpha. If your preprocessing differs, your hashes are not
+   Hamming-comparable. Use your own triple, and filter sync on it.
 
 ## The cache model
 
-**Do not** call the hub on your moderation hot path. Keep your existing local
-store + in-memory index and treat the hub as a sync source + contribution
-target:
+Do not call the hub on your moderation hot path. Keep your existing local store
+and in-memory index, and treat the hub as a sync source and a contribution
+target.
 
-- **Match locally, in memory.** No network call per message. Matching stays
-  exactly as fast as a local-only implementation.
-- **Load from your local DB at boot.** No hard dependency on the hub being
-  reachable at startup.
-- **Background sync loop** pulls new/changed rows and upserts them locally.
-- **Contribute local-first**: write locally immediately, then push to the hub in
-  the background.
-- **Report hits fire-and-forget**: never block enforcement on the hub.
+Matching happens locally, in memory. There is no network call per message, so
+it runs as fast as a local-only implementation. The index loads from your local
+DB at boot, so the hub does not have to be reachable at startup. A background
+sync loop pulls new and changed rows and upserts them locally. Contributions go
+local-first: write locally immediately, then push to the hub in the background.
+Hit reports are fire-and-forget; enforcement never blocks on the hub.
 
 ## Local schema additions
 
 Add to your fingerprint table:
-- `hub_fingerprint_id` (nullable) — the hub row id once linked.
-- `origin` (`local` | `hub`) — `local` = you contributed it; `hub` = synced from
+- `hub_fingerprint_id` (nullable): the hub row id once linked.
+- `origin` (`local` | `hub`): `local` = you contributed it; `hub` = synced from
   a peer. Drives delete-vs-flag behavior.
-- a single-row **sync watermark** (`last_sync_seq BIGINT`).
-- a **suppression** table keyed by `hub_fingerprint_id` — rows a moderator
-  removed locally, so sync won't resurrect them.
+- a single-row sync watermark (`last_sync_seq BIGINT`).
+- a suppression table keyed by `hub_fingerprint_id`, holding rows a moderator
+  removed locally so sync won't resurrect them.
 
 A partial unique index on `hub_fingerprint_id WHERE NOT NULL` lets you upsert
 synced rows with `ON CONFLICT`.
@@ -50,7 +48,7 @@ synced rows with `ON CONFLICT`.
 watermark = read local watermark
 loop:
   GET /v1/fingerprints/sync?since=watermark&limit=200
-      &algorithm=…&algorithm_version=…&normalization_version=…
+      &algorithm=...&algorithm_version=...&normalization_version=...
   for row in fingerprints:
      if triple(row) != your triple:            continue   # defensive
      if row.status in (hidden, deleted):       delete local row by hub id; continue
@@ -67,7 +65,7 @@ Isolate per-row failures so one bad row can't break a whole page.
 ```
 insert locally now (origin='local')  -> return the LOCAL id to the UI
 background:
-  POST /v1/fingerprints {phash_hex, category, action, triple, reason?, source_url?, …}
+  POST /v1/fingerprints {phash_hex, category, action, triple, reason?, source_url?, ...}
   on 201 -> stamp local row: hub_fingerprint_id = resp.id, origin='local'
   on 409 -> stamp with resp.existing_id (a prior attempt already landed it)
   on error -> leave unlinked; the next contribute/backfill reconciles
@@ -78,7 +76,7 @@ background:
 delete locally
 if origin == 'local' and hub_fingerprint_id:  DELETE /v1/fingerprints/{hub_id}   (fire-and-forget)
 if origin == 'hub'  and hub_fingerprint_id:
-     add hub_id to local suppression (await this — it must beat the next sync)
+     add hub_id to local suppression (await this; it must beat the next sync)
      POST /v1/fingerprints/{hub_id}/flag                                          (fire-and-forget)
 ```
 
@@ -87,31 +85,30 @@ if origin == 'hub'  and hub_fingerprint_id:
 bump your local hit_count as before
 fire-and-forget POST /v1/fingerprints/{hub_id}/hit   (only if the row has a hub id)
 ```
-Schedule the fire-and-forget task from async code with a running event loop — not
-from inside a thread-pool DB call.
+Schedule the fire-and-forget task from async code with a running event loop,
+not from inside a thread-pool DB call.
 
 ## Config knobs (recommended)
 
-Gate everything behind an enable flag defaulted **off**, plus a base URL and the
-API key from env. This lets you ship the code + schema migration first (inert),
-then flip it on as a separate step. Recommended: `hub_enabled` (bool),
-`hub_base_url`, `hub_sync_interval_seconds` (~300), `hub_request_timeout_seconds`
-(~5), and the API key in env.
+Gate everything behind an enable flag that defaults to off, and take the base
+URL and the API key from env. That way you can ship the code and the schema
+migration first, inert, then flip the flag as a separate step. The knobs:
+`hub_enabled` (bool), `hub_base_url`, `hub_sync_interval_seconds` (~300),
+`hub_request_timeout_seconds` (~5), and the API key in env.
 
 ## One-time backfill
 
 To seed the hub with your existing catalog: read local rows that aren't linked
 (`hub_fingerprint_id IS NULL`), `POST` each, and stamp the returned id back
 locally. Make it idempotent (skip already-linked rows; treat `409` as success
-using `existing_id`) so it's safely resumable. No reference backfill script is
-included, so clients should implement this flow for their own local schema and
-retry model.
+using `existing_id`) so it's resumable. There is no reference backfill script,
+so implement this flow against your own local schema and retry model.
 
 ## Gotchas
 
-- The hub **excludes your own contributions** from your sync feed, so you never
-  re-ingest your own rows — but only if you contribute under the same consumer
-  key you sync with. Use one key per client.
-- Advance the watermark to `next_since` **after** applying the page, not before.
+- The hub excludes your own contributions from your sync feed, so you never
+  re-ingest your own rows. That holds only if you contribute under the same
+  consumer key you sync with, so use one key per client.
+- Advance the watermark to `next_since` after applying the page, not before.
 - Suppression on remove of a `hub`-origin row is what stops the next sync from
   resurrecting it (a single flag won't hide it hub-side until the threshold).

@@ -1,18 +1,22 @@
-# FingerprintHub — Operations
+# FingerprintHub Operations
 
 This guide describes a conventional production deployment. Adapt paths, users,
 service managers, and backup tooling to your environment.
 
 ## Deployment model
 
-- Run FingerprintHub as an unprivileged service account.
-- Give it a dedicated Postgres role and database.
-- Bind the application to `127.0.0.1` and expose it through a
-  TLS-terminating reverse proxy.
-- Store secrets outside version control. If using `.env`, restrict the file to
-  the service account.
-- Apply migrations before starting a new application version. Startup validates
-  the schema revision but never migrates automatically.
+- Run FingerprintHub under its own unprivileged service account, so nothing
+  else on the host shares its credentials.
+- Give it a dedicated Postgres role and database rather than a schema inside
+  someone else's, so the hub's blast radius stays its own.
+- Bind the application to `127.0.0.1` and put a TLS-terminating reverse proxy
+  in front of it. The service speaks plain HTTP and knows nothing about
+  certificates.
+- Keep secrets out of version control. If you use `.env`, restrict it to the
+  service account (`chmod 600`).
+- Apply migrations before you start a new version of the code. Startup checks
+  that the database sits at the repository's Alembic head and refuses to serve
+  if it doesn't; it never migrates for you.
 
 ## Required environment
 
@@ -30,9 +34,9 @@ Generate a field-encryption key with:
 venv/bin/python tools/generate_field_key.py --key-id v1
 ```
 
-Keep old field-encryption keys configured while database rows still reference
-them. Losing every copy of a key permanently loses access to the fields it
-encrypted.
+Keep old field-encryption keys configured for as long as any row still
+references them. If you lose every copy of a key, you don't get the `reason`
+and `source_url` values it encrypted back.
 
 ## Initial deployment
 
@@ -45,10 +49,11 @@ venv/bin/alembic upgrade head
 venv/bin/python main.py
 ```
 
-For a managed service, set the repository as the working directory, load the
-required environment, run `venv/bin/python main.py`, and enable automatic
-restart on failure. The exact unit configuration belongs in deployment
-infrastructure rather than this application repository.
+To run it under a service manager, point the unit at the repository as its
+working directory, load the environment above, run `venv/bin/python main.py`,
+and restart it on failure. This repository doesn't ship a unit file, because
+the exact shape of one belongs with your deployment infrastructure rather than
+the application.
 
 ## Health checks
 
@@ -56,13 +61,17 @@ infrastructure rather than this application repository.
 curl --fail --silent http://127.0.0.1:58751/v1/health
 ```
 
-A healthy service returns `{"status":"ok","db":true}`. A database failure
-returns HTTP 503 with a degraded status.
+A healthy service answers `200` with `{"status":"ok","db":true}`. If the
+database ping fails you get `503` and `{"status":"degraded","db":false}`, so a
+load balancer or monitor can pull the instance out on its own. It's the only
+route that doesn't need an API key.
 
 ## Managing consumers
 
-Each client is represented by a consumer row with one API key. Only the key's
-SHA-256 hash is stored.
+Each client gets one consumer row holding one API key. The hub stores only the
+key's SHA-256 hash, so `create_consumer.py` prints the raw key once and can't
+show it again. There's no HTTP admin endpoint for any of this by design;
+minting and revoking happen on the host.
 
 ```bash
 # Mint a consumer and print its key once.
@@ -75,8 +84,11 @@ psql "$FINGERPRINTHUB_DATABASE_URL" \
   -c "UPDATE consumers SET enabled=FALSE WHERE name='community-client';"
 ```
 
-Deliver API keys through a secret manager or another protected channel. Store
-them only in the client's secret configuration.
+Hand the key over through a secret manager or another protected channel, and
+have the client keep it in its own environment rather than in committed
+configuration. To rotate one, mint a fresh consumer and disable the old row
+once the client has cut over; disabling takes effect on the next request, since
+auth looks the consumer up per request.
 
 ## Schema changes
 
@@ -92,13 +104,18 @@ database.
 
 ## Backups and retention
 
-Back up the Postgres database and field-encryption keys separately. Database
-backups contain encrypted field values; they are not sufficient without the
-corresponding keys.
+Back up the Postgres database and the field-encryption keys separately, and
+store them in different places. A database dump carries `reason` and
+`source_url` still encrypted, so on its own it doesn't restore them; you need
+the matching keys too. Backing both up to the same target defeats the point of
+encrypting the fields at all.
 
-Deletes and automatic hides are soft so tombstones can propagate to clients.
-Keep tombstones longer than the maximum time a client might remain offline
-before physically purging them.
+Deletes and auto-hides are soft: the row's `status` becomes `deleted` or
+`hidden` and it takes a fresh `sync_seq`, so the tombstone reaches every
+client's feed and they drop the row locally. Before you physically purge tombstones,
+make sure they've outlived the longest a client might stay offline. A client
+that misses a tombstone never learns to drop the row and keeps acting on a
+fingerprint everyone else has retired.
 
 ## Troubleshooting
 

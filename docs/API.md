@@ -1,12 +1,13 @@
-# FingerprintHub — API Reference
+# FingerprintHub API Reference
 
 Base URL (default): `http://127.0.0.1:58751`. All paths are under `/v1`.
 
 ## Authentication
 
-Every endpoint except `/v1/health` requires an `X-API-Key: fph_…` header. The
+Every endpoint except `/v1/health` requires an `X-API-Key: fph_...` header. The
 key is hashed (sha256) and looked up in `consumers`; the consumer must be
-`enabled`. Requests are rate-limited per consumer (default 300/min → `429`).
+`enabled`. Requests are rate-limited per consumer, default 300/min; over that
+limit you get `429`.
 
 Scopes (a consumer holds a subset of `read`, `write`, `admin`):
 
@@ -34,18 +35,18 @@ Scope: `read`. Incremental pull. Query params:
 |-------|---------|-------|
 | `since` | `0` | last `sync_seq` durably applied |
 | `limit` | 200 | clamped to `[1, FINGERPRINTHUB_MAX_SYNC_LIMIT]` (500) |
-| `algorithm`, `algorithm_version`, `normalization_version` | — | optional compatibility filter |
+| `algorithm`, `algorithm_version`, `normalization_version` | none | optional compatibility filter |
 
-Returns active rows **and** hidden/deleted tombstones with `sync_seq > since`,
-**excluding the caller's own contributions**. Omits `reason`/`source_url` and
-hit stats.
+Returns active rows and hidden/deleted tombstones with `sync_seq > since`,
+excluding the caller's own contributions. Omits `reason`/`source_url` and hit
+stats.
 ```json
 200 {
   "fingerprints": [
-    {"id": 48, "sync_seq": 48, "phash_hex": "…", "algorithm": "phash",
+    {"id": 48, "sync_seq": 48, "phash_hex": "...", "algorithm": "phash",
      "algorithm_version": "imagehash.phash", "normalization_version": "alpha_white_v1",
      "category": "scam", "action": "timeout", "consumer_id": 2,
-     "source_guild_id": null, "added_at_ms": 1782…, "updated_at_ms": 1782…,
+     "source_guild_id": null, "added_at_ms": 1782..., "updated_at_ms": 1782...,
      "auto_added": false, "provenance": "manual_staff", "status": "active"}
   ],
   "next_since": 48,
@@ -53,8 +54,8 @@ hit stats.
 }
 ```
 Client contract: apply the page, then set your watermark to `next_since`; if
-`has_more`, immediately request again with `since=next_since`. For `status` in
-`{hidden, deleted}`, remove the row locally.
+`has_more`, immediately request again with `since=next_since`. Rows whose
+`status` is `hidden` or `deleted` should be removed locally.
 
 ## POST /v1/fingerprints
 Scope: `write`. Contribute a fingerprint (or resurrect a previously-deleted one
@@ -66,18 +67,19 @@ for this consumer). Body:
  "algorithm": "phash",               // optional (defaults shown)
  "algorithm_version": "imagehash.phash",
  "normalization_version": "alpha_white_v1",
- "source_guild_id": "…",             // optional
- "reason": "…", "source_url": "…",   // optional, stored encrypted
+ "source_guild_id": "...",           // optional
+ "reason": "...",                    // optional, stored encrypted
+ "source_url": "...",                // optional, stored encrypted
  "auto_added": false, "provenance": "manual_staff"}
 ```
-- `201` → the created row (owner sees `reason`/`source_url`).
-- `409 {"error": "duplicate…", "existing_id": N}` → a live row already exists for
-  this `(phash_hex, consumer)`.
-- `400` → invalid `phash_hex`/`category`/`action`.
+- `201` returns the created row (owner sees `reason`/`source_url`).
+- `409 {"error": "duplicate...", "existing_id": N}` means a live row already
+  exists for this `(phash_hex, consumer)`.
+- `400` means an invalid `phash_hex`/`category`/`action`.
 
 ## POST /v1/fingerprints/{id}/hit
 Scope: `write`. Record enforcement; bumps `hit_count`/`last_hit_at_ms` (does not
-change `sync_seq`). Body (all optional): `{"guild_id": "…", "distance": 2}`.
+change `sync_seq`). Body (all optional): `{"guild_id": "...", "distance": 2}`.
 ```json
 200 {"id": 48, "hit_count": 3}
 404 {"error": "fingerprint not found"}   // missing or deleted
@@ -86,7 +88,7 @@ change `sync_seq`). Body (all optional): `{"guild_id": "…", "distance": 2}`.
 ## POST /v1/fingerprints/{id}/flag
 Scope: `write`. Idempotent per consumer. Auto-hides the row once distinct
 flaggers reach `FINGERPRINTHUB_AUTO_HIDE_FLAG_THRESHOLD` (default 2). Body:
-`{"reason": "…"}` (optional).
+`{"reason": "..."}` (optional).
 ```json
 200 {"id": 48, "flag_count": 1, "status": "active", "hidden": false}
 200 {"id": 48, "flag_count": 2, "status": "hidden", "hidden": true}
@@ -94,7 +96,7 @@ flaggers reach `FINGERPRINTHUB_AUTO_HIDE_FLAG_THRESHOLD` (default 2). Body:
 ```
 
 ## DELETE /v1/fingerprints/{id}
-Scope: `write` **and** ownership (or `admin`). Soft-delete (tombstone).
+Scope: `write` plus ownership (or `admin`). Soft-delete (tombstone).
 ```json
 204   // owner or admin
 403 {"error": "only the owning consumer or an admin may delete; use /flag instead"}
@@ -107,9 +109,9 @@ row or hold `admin`. A `hidden` row returns `404` to non-owner/non-admin.
 
 ## GET /v1/fingerprints
 Scope: `read`. Browse. Query: `category`, `algorithm`, `consumer_id`,
-`limit` (≤200), `offset`, `include_hidden` (honored only with `admin`).
+`limit` (at most 200), `offset`, `include_hidden` (honored only with `admin`).
 ```json
-200 {"fingerprints": [ {…detail row…} ], "count": 25}
+200 {"fingerprints": [ {...detail row...} ], "count": 25}
 ```
 
 ## GET /v1/fingerprints/stats

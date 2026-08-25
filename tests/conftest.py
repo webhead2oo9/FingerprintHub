@@ -1,7 +1,8 @@
 """Shared fixtures for FingerprintHub tests.
 
-Postgres-backed and destructive: skipped unless FINGERPRINTHUB_TEST_DATABASE_URL
-points at a DISPOSABLE database already migrated to Alembic head.
+Postgres-backed and destructive: skipped unless
+FINGERPRINTHUB_TEST_DATABASE_URL points at a disposable database already
+migrated to Alembic head.
 """
 
 from __future__ import annotations

@@ -57,7 +57,7 @@ async def test_sync_excludes_own_but_returns_peer(client, make_consumer):
     await _contribute(client, key_a, PHASH_A)
     await _contribute(client, key_b, PHASH_B)
 
-    # client-a should NOT see its own contribution, but SHOULD see client-b's.
+    # client-a should not see its own contribution, but should see client-b's.
     resp = await client.get("/v1/fingerprints/sync?since=0", headers=auth(key_a))
     assert resp.status == 200
     body = await resp.json()

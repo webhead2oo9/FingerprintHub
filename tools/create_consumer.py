@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Create a FingerprintHub consumer and print its API key once.
 
-The raw key is shown exactly once and never stored (only its SHA-256 hash is
-persisted). Run on the host with FINGERPRINTHUB_DATABASE_URL set, e.g.:
+The raw key is shown once and never stored; only its SHA-256 hash is
+persisted. Run on the host with FINGERPRINTHUB_DATABASE_URL set, e.g.:
 
     venv/bin/python tools/create_consumer.py --name community-client --scopes read,write
 """
