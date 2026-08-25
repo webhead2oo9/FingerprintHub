@@ -73,7 +73,7 @@ python3 -m venv venv && venv/bin/pip install -r requirements.txt
 venv/bin/python tools/generate_field_key.py --key-id v1   # put output in .env
 docker compose up -d                                       # dev Postgres on :54330
 
-export FINGERPRINTHUB_DATABASE_URL=postgresql://fingerprinthub:fingerprinthub_dev@localhost:54330/fingerprinthub_dev
+export FINGERPRINTHUB_DATABASE_URL=postgresql://fingerprinthub:fingerprinthub_dev@127.0.0.1:54330/fingerprinthub_dev
 venv/bin/alembic upgrade head
 
 # tests (destructive: point only at a disposable DB)

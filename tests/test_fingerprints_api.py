@@ -49,6 +49,13 @@ async def test_validation_rejects_bad_input(client, make_consumer):
     assert bad_action.status == 400
     bad_cat = await _contribute(client, key, PHASH_A, category="memes")
     assert bad_cat.status == 400
+    # "false" is truthy in Python; a coercing handler would store True here.
+    bad_auto_added = await _contribute(client, key, PHASH_A, auto_added="false")
+    assert bad_auto_added.status == 400
+
+    ok = await _contribute(client, key, PHASH_A, auto_added=True)
+    assert ok.status == 201
+    assert (await ok.json())["auto_added"] is True
 
 
 async def test_sync_excludes_own_but_returns_peer(client, make_consumer):

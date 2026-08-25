@@ -45,6 +45,19 @@ def _str_or_none(value: Any) -> Optional[str]:
     return text or None
 
 
+def _bool_or_none(value: Any, *, default: bool = False) -> Optional[bool]:
+    """Return a real JSON boolean, ``default`` if absent, or None if invalid.
+
+    Deliberately strict: ``bool(value)`` would read the string "false" as True
+    and quietly store the opposite of what the client sent.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return None
+
+
 def _can_see_secrets(request: web.Request, row: Dict[str, Any]) -> bool:
     consumer = get_consumer(request)
     if "admin" in set(consumer.get("scopes") or ()):
@@ -174,6 +187,11 @@ async def contribute_fingerprint(request: web.Request) -> web.Response:
             {"error": f"action must be one of {sorted(fingerprint_store.VALID_ACTIONS)}"},
             status=400,
         )
+    auto_added = _bool_or_none(body.get("auto_added"))
+    if auto_added is None:
+        return web.json_response(
+            {"error": "auto_added must be a boolean"}, status=400
+        )
 
     consumer = get_consumer(request)
     row, created = await run_blocking_io(
@@ -191,7 +209,7 @@ async def contribute_fingerprint(request: web.Request) -> web.Response:
             source_guild_id=_str_or_none(body.get("source_guild_id")),
             reason=_str_or_none(body.get("reason")),
             source_url=_str_or_none(body.get("source_url")),
-            auto_added=bool(body.get("auto_added", False)),
+            auto_added=auto_added,
             provenance=_str_or_none(body.get("provenance")) or "manual_staff",
             now_ms=utc_now_ms(),
         )
