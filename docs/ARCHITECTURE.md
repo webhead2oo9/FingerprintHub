@@ -40,11 +40,13 @@ repository's Alembic head; if either check fails it refuses to serve.
 
 ## Request lifecycle
 
-1. `error_middleware` (outermost) wraps everything; unhandled exceptions become 500s.
+1. `error_middleware` (outermost) wraps everything. A lost Postgres connection
+   becomes a `503`, matching `/v1/health`'s degraded signal; anything else
+   unhandled becomes a `500`.
 2. `auth_middleware` skips `/v1/health`; otherwise hashes `X-API-Key`, looks the
    consumer up by exact hash, checks `enabled`, applies a per-consumer sliding
-   rate limit, throttled-updates `last_seen_at_ms`, and attaches the consumer to
-   `request['consumer']`.
+   rate limit, attaches the consumer to `request['consumer']`, and then
+   throttled-updates `last_seen_at_ms`.
 3. The handler calls `require_scope(request, ...)` then does its work via
    `run_blocking_io` (psycopg is synchronous; DB work is offloaded to a thread).
 
@@ -68,7 +70,7 @@ See `alembic/versions/0001_init.py` for exact DDL.
   - `hit_count` and `last_hit_at_ms`, stats that are never synced to peers.
 - `fingerprint_hits`: per-hit audit rows (who enforced, where, distance).
 - `fingerprint_flags`: one row per (fingerprint, flagging consumer); drives
-  auto-hide.
+  auto-hide. Its `reason` is stored in plaintext, unlike the fingerprint's.
 
 ## The sync protocol
 
@@ -103,8 +105,9 @@ The shared dataset is security-relevant, so deletion power is conservative. A
 consumer may soft-delete its own contributions and nothing else; the status
 change leaves a tombstone. A consumer that disagrees with someone else's row
 can only flag it. Once `FINGERPRINTHUB_AUTO_HIDE_FLAG_THRESHOLD` distinct
-consumers flag a row it auto-hides: excluded from sync and browse, with a
-tombstone propagating. An `admin` scope can soft-delete anything, but it is
+consumers flag a row it auto-hides: dropped from browse, and pushed to peers
+as a tombstone on the sync feed so they drop their local copies. A consumer
+holding `write` and `admin` together can soft-delete anything, but `admin` is
 held in reserve and has not been issued to any consumer.
 
 So one client's mistake or bad actor can't silently delete protection for

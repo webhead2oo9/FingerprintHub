@@ -12,18 +12,32 @@ service managers, and backup tooling to your environment.
 - Bind the application to `127.0.0.1` and put a TLS-terminating reverse proxy
   in front of it. The service speaks plain HTTP and knows nothing about
   certificates.
+- Expect the per-consumer rate limit to be per process. It lives in memory in
+  the serving process, isn't shared across workers or replicas, and resets on
+  restart, so N processes let a consumer through roughly N times the limit.
 - Keep secrets out of version control. If you use `.env`, restrict it to the
   service account (`chmod 600`).
 - Apply migrations before you start a new version of the code. Startup checks
   that the database sits at the repository's Alembic head and refuses to serve
   if it doesn't; it never migrates for you.
 
-## Required environment
+## Environment
+
+Startup requires only `FINGERPRINTHUB_DATABASE_URL`. `FINGERPRINTHUB_HOST` and
+`FINGERPRINTHUB_PORT` are optional bind overrides, shown below at their
+defaults, and `.env.example` lists the remaining knobs.
+
+The field-encryption keys are read lazily, on the first request that stores or
+reads a `reason` or `source_url`. A deployment missing them starts up and
+reports healthy, then fails those requests, so set them before you serve
+traffic rather than relying on startup to catch it.
 
 ```dotenv
 FINGERPRINTHUB_DATABASE_URL=postgresql://fingerprinthub:<password>@127.0.0.1:5432/fingerprinthub
 FINGERPRINTHUB_FIELD_ENCRYPTION_KEYS=v1:<base64-encoded-32-byte-key>
 FINGERPRINTHUB_FIELD_ENCRYPTION_ACTIVE_KEY_ID=v1
+
+# Optional; defaults shown.
 FINGERPRINTHUB_HOST=127.0.0.1
 FINGERPRINTHUB_PORT=58751
 ```
@@ -35,8 +49,12 @@ venv/bin/python tools/generate_field_key.py --key-id v1
 ```
 
 Keep old field-encryption keys configured for as long as any row still
-references them. If you lose every copy of a key, you don't get the `reason`
-and `source_url` values it encrypted back.
+references them. `FINGERPRINTHUB_FIELD_ENCRYPTION_KEYS` takes a comma-separated
+list of `key_id:base64_key` entries, so a rotation reads
+`v1:<old-base64>,v2:<new-base64>` with
+`FINGERPRINTHUB_FIELD_ENCRYPTION_ACTIVE_KEY_ID=v2`. New writes then use `v2`
+while `v1` stays available to decrypt existing rows. If you lose every copy of
+a key, you don't get the `reason` and `source_url` values it encrypted back.
 
 ## Initial deployment
 
@@ -105,17 +123,23 @@ database.
 ## Backups and retention
 
 Back up the Postgres database and the field-encryption keys separately, and
-store them in different places. A database dump carries `reason` and
-`source_url` still encrypted, so on its own it doesn't restore them; you need
-the matching keys too. Backing both up to the same target defeats the point of
-encrypting the fields at all.
+store them in different places. A dump carries `fingerprints.reason` and
+`fingerprints.source_url` still encrypted, so on its own it doesn't restore
+them; you need the matching keys too. Backing both up to the same target
+defeats the point of encrypting the fields at all.
+
+Encryption covers those two columns and nothing else. The free-text note a
+consumer attaches when flagging someone else's row, `fingerprint_flags.reason`,
+is stored and dumped in plaintext. Treat dumps as sensitive on that basis.
 
 Deletes and auto-hides are soft: the row's `status` becomes `deleted` or
-`hidden` and it takes a fresh `sync_seq`, so the tombstone reaches every
-client's feed and they drop the row locally. Before you physically purge tombstones,
-make sure they've outlived the longest a client might stay offline. A client
-that misses a tombstone never learns to drop the row and keeps acting on a
-fingerprint everyone else has retired.
+`hidden` and it takes a fresh `sync_seq`, so the tombstone reaches every other
+client's feed and they drop the row locally. The contributing consumer is the
+exception: sync never returns a consumer its own rows, so an owner whose row
+peers hid learns that from the detail endpoint, not from its feed. Before you
+physically purge tombstones, make sure they've outlived the longest a client
+might stay offline. A client that misses a tombstone never learns to drop the
+row and keeps acting on a fingerprint everyone else has retired.
 
 ## Troubleshooting
 

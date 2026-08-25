@@ -7,7 +7,8 @@ Base URL (default): `http://127.0.0.1:58751`. All paths are under `/v1`.
 Every endpoint except `/v1/health` requires an `X-API-Key: fph_...` header. The
 key is hashed (sha256) and looked up in `consumers`; the consumer must be
 `enabled`. Requests are rate-limited per consumer, default 300/min; over that
-limit you get `429`.
+limit you get `429`. That window is tracked in memory per serving process, so
+it isn't shared across workers or replicas.
 
 Scopes (a consumer holds a subset of `read`, `write`, `admin`):
 
@@ -15,9 +16,23 @@ Scopes (a consumer holds a subset of `read`, `write`, `admin`):
 |-------|--------|
 | `read`  | sync, get, list, stats |
 | `write` | contribute, hit, flag, delete-own |
-| `admin` | delete/see-hidden across all consumers (reserved; not issued yet) |
+| `admin` | ownership override; pairs with another scope (reserved; not issued yet) |
 
-Error bodies are JSON: `{"error": "..."}` (plus `existing_id` on 409).
+Scopes are independent flags, not levels. `admin` overrides the ownership check
+but does not imply the scope a route needs, so deleting another consumer's row
+takes `write` plus `admin`, and seeing their hidden row takes `read` plus
+`admin`.
+
+Error bodies are JSON: `{"error": "..."}` (plus `existing_id` on 409, and
+`details` on a JSON parse failure). A
+missing or unrecognized key is `401`; a missing scope is `403`. If Postgres is
+unreachable, any route answers `503` with
+`{"error": "database temporarily unavailable"}`.
+
+Every route taking an `{id}` returns `400` for a non-integer id, and the routes
+with integer query params (`since`, `limit`, `offset`, `consumer_id`) return
+`400` when those don't parse. A malformed JSON body is `400` on contribute;
+`hit` and `flag` treat an unparseable body as an empty one.
 
 ---
 
@@ -38,8 +53,8 @@ Scope: `read`. Incremental pull. Query params:
 | `algorithm`, `algorithm_version`, `normalization_version` | none | optional compatibility filter |
 
 Returns active rows and hidden/deleted tombstones with `sync_seq > since`,
-excluding the caller's own contributions. Omits `reason`/`source_url` and hit
-stats.
+excluding the caller's own contributions. Omits `reason`/`source_url`,
+`flag_count`, and hit stats.
 ```json
 200 {
   "fingerprints": [
@@ -61,7 +76,7 @@ Client contract: apply the page, then set your watermark to `next_since`; if
 Scope: `write`. Contribute a fingerprint (or resurrect a previously-deleted one
 for this consumer). Body:
 ```json
-{"phash_hex": "0123456789abcdef",   // required, 16 lowercase hex
+{"phash_hex": "0123456789abcdef",   // required, 16 hex chars, lowercased
  "category": "scam",                 // required, enum
  "action": "kick",                   // required, kick|timeout
  "algorithm": "phash",               // optional (defaults shown)
@@ -94,6 +109,9 @@ flaggers reach `FINGERPRINTHUB_AUTO_HIDE_FLAG_THRESHOLD` (default 2). Body:
 200 {"id": 48, "flag_count": 2, "status": "hidden", "hidden": true}
 404 {"error": "fingerprint not found"}
 ```
+`hidden` reports whether this call is what hid the row, not whether the row is
+currently hidden. Flagging an already-hidden row returns `status: "hidden"`
+with `hidden: false`.
 
 ## DELETE /v1/fingerprints/{id}
 Scope: `write` plus ownership (or `admin`). Soft-delete (tombstone).
@@ -105,17 +123,24 @@ Scope: `write` plus ownership (or `admin`). Soft-delete (tombstone).
 
 ## GET /v1/fingerprints/{id}
 Scope: `read`. Full record. `reason`/`source_url` are `null` unless you own the
-row or hold `admin`. A `hidden` row returns `404` to non-owner/non-admin.
+row or hold `admin`. A `hidden` row returns `404` to non-owner/non-admin, and a
+`deleted` row returns `404` to everyone, owners and admins included.
 
 ## GET /v1/fingerprints
 Scope: `read`. Browse. Query: `category`, `algorithm`, `consumer_id`,
-`limit` (at most 200), `offset`, `include_hidden` (honored only with `admin`).
+`limit` (default 50, clamped to `FINGERPRINTHUB_MAX_LIST_LIMIT`, 200),
+`offset` (default 0), `include_hidden` (honored only with `admin`).
+
+Returns `active` rows, newest id first. `include_hidden` adds `hidden` rows for
+an admin; `deleted` rows never appear here. `count` is the size of the page you
+got back, not the total number of matching rows, so page until a short page.
 ```json
 200 {"fingerprints": [ {...detail row...} ], "count": 25}
 ```
 
 ## GET /v1/fingerprints/stats
-Scope: `read`. Aggregates only.
+Scope: `read`. Aggregates only. `by_category` and `by_provenance` count active
+rows only, and `active_consumers` counts enabled consumers.
 ```json
 200 {"total_active": 47, "total_hidden": 0, "total_deleted": 1, "total_hits": 0,
      "by_category": {"scam": 46, "crypto": 1},

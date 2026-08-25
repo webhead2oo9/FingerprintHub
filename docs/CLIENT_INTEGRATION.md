@@ -67,9 +67,13 @@ insert locally now (origin='local')  -> return the LOCAL id to the UI
 background:
   POST /v1/fingerprints {phash_hex, category, action, triple, reason?, source_url?, ...}
   on 201 -> stamp local row: hub_fingerprint_id = resp.id, origin='local'
-  on 409 -> stamp with resp.existing_id (a prior attempt already landed it)
+  on 409 -> read back resp.existing_id and reconcile before stamping
   on error -> leave unlinked; the next contribute/backfill reconciles
 ```
+A 409 only tells you a live row already exists for your `(phash_hex,
+consumer_id)` pair. It may carry a different triple, category, or action than
+the one you just sent, and it may already be `hidden` if peers flagged it. Read
+it back before you treat your local row as linked and active.
 
 ### Remove (staff removes a fingerprint)
 ```
@@ -100,8 +104,8 @@ migration first, inert, then flip the flag as a separate step. The knobs:
 
 To seed the hub with your existing catalog: read local rows that aren't linked
 (`hub_fingerprint_id IS NULL`), `POST` each, and stamp the returned id back
-locally. Make it idempotent (skip already-linked rows; treat `409` as success
-using `existing_id`) so it's resumable. There is no reference backfill script,
+locally. Make it idempotent (skip already-linked rows; reconcile `409` through
+`existing_id`) so it's resumable. There is no reference backfill script,
 so implement this flow against your own local schema and retry model.
 
 ## Gotchas
@@ -110,5 +114,8 @@ so implement this flow against your own local schema and retry model.
   re-ingest your own rows. That holds only if you contribute under the same
   consumer key you sync with, so use one key per client.
 - Advance the watermark to `next_since` after applying the page, not before.
+- A watermark only means anything for the triple you synced with. If you change
+  your triple, reset it to 0 and re-pull, or every older row matching the new
+  triple stays permanently below your cursor.
 - Suppression on remove of a `hub`-origin row is what stops the next sync from
   resurrecting it (a single flag won't hide it hub-side until the threshold).

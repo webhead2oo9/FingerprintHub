@@ -44,8 +44,9 @@ is `flag`: a row auto-hides once `FINGERPRINTHUB_AUTO_HIDE_FLAG_THRESHOLD`
 distinct consumers have flagged it. Finer trust tuning is deferred until a
 second consumer exists.
 
-`reason` and `source_url` are encrypted at rest (AES-GCM, envelope
-`enc:v1:...`) and redacted from non-owners.
+A fingerprint's `reason` and `source_url` are encrypted at rest (AES-GCM,
+envelope `enc:v1:...`) and redacted from non-owners. The `reason` attached to a
+flag is not encrypted.
 
 ## API (`/v1`)
 
