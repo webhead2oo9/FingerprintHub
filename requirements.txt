@@ -10,7 +10,7 @@ python-dotenv==1.2.3
 psycopg==3.3.4
 psycopg-binary==3.3.4
 psycopg-pool==3.3.1
-cryptography==50.0.0
+cryptography==50.0.1
 alembic==1.19.1
 SQLAlchemy==2.0.52
 Mako==1.4.1
