@@ -7,11 +7,11 @@
 # Direct runtime dependencies
 aiohttp==3.14.3
 python-dotenv==1.2.3
-psycopg==3.3.4
-psycopg-binary==3.3.4
+psycopg==3.3.5
+psycopg-binary==3.3.5
 psycopg-pool==3.3.1
-cryptography==50.0.0
-alembic==1.19.1
+cryptography==50.0.1
+alembic==1.19.2
 SQLAlchemy==2.0.52
 Mako==1.4.1
 MarkupSafe==3.0.3
@@ -21,7 +21,7 @@ greenlet==3.5.5
 pytest==9.1.1
 pytest-asyncio==1.4.0
 pytest-cov==7.1.0
-coverage==7.15.4
+coverage==7.16.0
 Pygments==2.21.0
 
 # Transitive dependencies required by the pinned direct set
@@ -32,7 +32,7 @@ cffi==2.1.1
 frozenlist==1.8.0
 idna==3.19
 iniconfig==2.3.0
-multidict==6.7.1
+multidict==6.8.0
 packaging==26.3
 pluggy==1.6.0
 pycparser==3.0
