@@ -37,9 +37,14 @@ def _dsn() -> str:
 
 
 @pytest.fixture(scope="session")
-def pool():
+def database_url():
+    return _dsn()
+
+
+@pytest.fixture(scope="session")
+def pool(database_url):
     p = ConnectionPool(
-        conninfo=_dsn(),
+        conninfo=database_url,
         min_size=1,
         max_size=4,
         kwargs={"row_factory": dict_row},
@@ -50,7 +55,12 @@ def pool():
 
 
 @pytest.fixture(autouse=True)
-def _clean_tables(pool):
+def _clean_tables(request):
+    if request.node.get_closest_marker("no_database"):
+        yield
+        return
+
+    pool = request.getfixturevalue("pool")
     with pool.connection() as conn:
         with conn.transaction():
             conn.execute(
