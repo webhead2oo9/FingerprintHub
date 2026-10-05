@@ -55,6 +55,7 @@ class PostgresPoolManager:
                 "row_factory": dict_row,
                 "connect_timeout": settings.connect_timeout_seconds,
             },
+            check=ConnectionPool.check_connection,
             open=True,
         )
         self.pool_dsn = settings.dsn
