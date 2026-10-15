@@ -21,6 +21,16 @@ from psycopg_pool import ConnectionPool
 
 from utils.field_encryption import encrypt_text
 
+# Shared by every fingerprint writer, before any row lock or sequence allocation.
+# Transaction scope makes commit/rollback (including connection loss) release it.
+# Keep fingerprints_sync_seq at CACHE 1; cached ranges are not commit ordered.
+_SYNC_WRITE_LOCK = 0x46504853594E43
+
+
+def _lock_writes(conn) -> None:
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SYNC_WRITE_LOCK,))
+
+
 VALID_ACTIONS = frozenset({"kick", "timeout"})
 VALID_CATEGORIES = frozenset({"scam", "nsfw", "crypto", "phishing", "other"})
 
@@ -58,6 +68,7 @@ def contribute(
     enc_source_guild_id = encrypt_text(source_guild_id)
     with pool.connection() as conn:
         with conn.transaction():
+            _lock_writes(conn)
             existing = conn.execute(
                 "SELECT id, status FROM fingerprints "
                 "WHERE phash_hex = %s AND consumer_id = %s",
@@ -218,6 +229,7 @@ def report_hit(
     None if the fingerprint is missing/deleted. Does not advance sync_seq."""
     with pool.connection() as conn:
         with conn.transaction():
+            _lock_writes(conn)
             fp = conn.execute(
                 "SELECT id, status FROM fingerprints WHERE id = %s FOR UPDATE",
                 (fingerprint_id,),
@@ -255,6 +267,7 @@ def flag(
     transition from active to hidden."""
     with pool.connection() as conn:
         with conn.transaction():
+            _lock_writes(conn)
             # FOR UPDATE serializes concurrent flaggers of the same fingerprint.
             # Without it, two flags racing to the threshold can each COUNT before
             # the other commits, both see a sub-threshold count, and neither
@@ -306,6 +319,7 @@ def soft_delete(pool: ConnectionPool, *, fingerprint_id: int, now_ms: int) -> bo
     True if a non-deleted row was changed."""
     with pool.connection() as conn:
         with conn.transaction():
+            _lock_writes(conn)
             row = conn.execute(
                 "UPDATE fingerprints SET status = 'deleted', "
                 "sync_seq = nextval('fingerprints_sync_seq'), updated_at_ms = %s "
@@ -338,6 +352,7 @@ def apply_retention(
 
     with pool.connection() as conn:
         with conn.transaction(force_rollback=dry_run):
+            _lock_writes(conn)
             hits = conn.execute(
                 "DELETE FROM fingerprint_hits WHERE hit_at_ms < %s",
                 (now_ms - hit_retention_ms,),
