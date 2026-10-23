@@ -13,7 +13,7 @@ psycopg-pool==3.3.1
 cryptography==50.0.0
 alembic==1.19.1
 SQLAlchemy==2.0.52
-Mako==1.4.1
+Mako==1.4.2
 MarkupSafe==3.0.3
 greenlet==3.5.5
 
