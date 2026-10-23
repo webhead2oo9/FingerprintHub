@@ -32,7 +32,7 @@ cffi==2.1.1
 frozenlist==1.8.0
 idna==3.19
 iniconfig==2.3.0
-multidict==6.7.1
+multidict==6.9.1
 packaging==26.3
 pluggy==1.6.0
 pycparser==3.0
